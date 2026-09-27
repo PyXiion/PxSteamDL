@@ -13,3 +13,11 @@ compile_commands.json
 *.exe
 CMakeUserPresets.json
 .cpm-cache/
+
+# Python
+__pycache__/
+*.egg-info/
+dist/
+.venv/
+_skbuild/
+wheelhouse/

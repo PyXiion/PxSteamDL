@@ -32,3 +32,33 @@ jobs:
         run: |
           ./build/pxsteamdl -o /tmp/mods 2009463077
           test -f /tmp/mods/2009463077/About/About.xml
+
+  python:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    env:
+      CPM_SOURCE_CACHE: ${{ github.workspace }}/.cpm-cache
+    steps:
+      - name: Install dependencies
+        run: pacman -Syu --noconfirm base-devel cmake ninja curl openssl zlib xz zstd git python python-pip
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: .cpm-cache
+          key: cpm-python-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Install package
+        run: |
+          python -m venv /tmp/venv
+          /tmp/venv/bin/pip install .
+
+      - name: Smoke test
+        shell: /tmp/venv/bin/python {0}
+        run: |
+          import pathlib, pxsteamdl
+          results = pxsteamdl.Client().download([2009463077], "/tmp/mods", on_progress=lambda p: None)
+          print(results)
+          assert results[0].ok, results[0].error
+          assert (results[0].path / "About" / "About.xml").is_file()

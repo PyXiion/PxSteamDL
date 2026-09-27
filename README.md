@@ -59,6 +59,31 @@ for (const auto& r : client.download(ids, "mods", options))
 Link against the `PxSteamDL::pxsteamdl` CMake target (e.g. after `add_subdirectory` or `CPMAddPackage`).
 The CLI executable is built as `build/pxsteamdl`.
 
+## Python
+
+```sh
+pip install git+https://github.com/PyXiion/PxSteamDL   # or, from a checkout: pip install .
+```
+
+This builds the extension from source, so it needs the same system dependencies as the C++ build plus a C++20 compiler and CMake.
+Wheels are not published: PxSteamDL needs libcurl ≥ 8.11 with WebSocket support, which the manylinux baseline does not provide.
+
+```py
+import pxsteamdl
+
+client = pxsteamdl.Client()  # anonymous logon; raises RuntimeError on failure
+
+def on_progress(p: pxsteamdl.Progress) -> None:  # called from worker threads
+    print(f"{p.item_id}: {p.bytes_done}/{p.bytes_total}")
+
+for r in client.download([2009463077, 818773962], "mods", on_progress=on_progress):
+    print(r.item_id, r.title, r.path if r.ok else r.error)
+```
+
+`download` releases the GIL, and one `Client` may be used from several threads.
+An exception raised by `on_progress` is reported like an exception in a thread (`sys.unraisablehook`) and does not stop the download.
+The package ships type stubs.
+
 ## Behaviour
 
 - Updates are incremental: a file whose size and SHA-1 already match the manifest is not downloaded again. Files and directories that are not in the manifest are deleted, as steamcmd does.
