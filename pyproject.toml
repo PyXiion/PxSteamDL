@@ -38,7 +38,7 @@ PXSTEAMDL_BUILD_CLI = "OFF"
 build = "cp310-* cp311-* cp312-* cp313-* cp314-*"
 skip = "*-musllinux_*"
 build-verbosity = 1
-test-command = "python {project}/.github/smoke_test.py"
+test-command = "python -u {project}/.github/smoke_test.py"
 
 [tool.cibuildwheel.linux]
 archs = ["x86_64"]

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: LGPL-3.0-or-later
 """Downloads a small Workshop item through the installed package, synchronously and with asyncio."""
 import asyncio
+import faulthandler
 import pathlib
 import tempfile
 import threading
@@ -8,6 +9,9 @@ import threading
 import pxsteamdl
 
 ITEM = 2009463077
+
+# A hang fails the job with a traceback of every thread instead of running into the CI timeout.
+faulthandler.dump_traceback_later(300, exit=True)
 
 with tempfile.TemporaryDirectory() as tmp:
     root = pathlib.Path(tmp)
@@ -33,3 +37,4 @@ with tempfile.TemporaryDirectory() as tmp:
         assert calls
 
     asyncio.run(download_async())
+print("smoke test passed")
