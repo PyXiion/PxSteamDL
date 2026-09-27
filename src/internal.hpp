@@ -5,6 +5,7 @@
 #include <functional>
 #include <span>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -57,8 +58,9 @@ struct ItemJob {
 };
 
 // Downloads all jobs: up to parallel_items items are resolved concurrently, and their chunks share a pool of
-// parallel_items * threads_per_item workers.
-void download_items(Session& session, std::span<ItemJob> jobs, unsigned parallel_items, unsigned threads_per_item);
+// parallel_items * threads_per_item workers. Once stop is requested, unfinished jobs fail with "cancelled".
+void download_items(Session& session, std::span<ItemJob> jobs, unsigned parallel_items, unsigned threads_per_item,
+                    std::stop_token stop);
 
 Bytes encode_uint(std::uint32_t field, std::uint64_t value);
 Bytes encode_fixed32(std::uint32_t field, std::uint32_t value);

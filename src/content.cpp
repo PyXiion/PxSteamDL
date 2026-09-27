@@ -524,9 +524,10 @@ struct Task {
 // items, so a large item keeps every worker busy instead of only its own share.
 class Downloader {
 public:
-    Downloader(Session& session, std::span<ItemJob> jobs, unsigned planners, unsigned workers)
+    Downloader(Session& session, std::span<ItemJob> jobs, unsigned planners, unsigned workers, std::stop_token stop)
         : session_(session), jobs_(jobs), states_(jobs.size()),
-          planners_(std::clamp<std::size_t>(planners, 1, jobs.size())), workers_(std::max(1u, workers)) {}
+          planners_(std::clamp<std::size_t>(planners, 1, jobs.size())), workers_(std::max(1u, workers)),
+          stop_(std::move(stop)) {}
 
     void run() {
         active_planners_ = planners_;
@@ -541,6 +542,7 @@ private:
     std::vector<std::unique_ptr<ItemState>> states_;
     std::size_t planners_;
     std::size_t workers_;
+    std::stop_token stop_;
     std::atomic<std::size_t> next_item_{0};
 
     std::mutex cache_mutex_;
@@ -613,6 +615,7 @@ private:
     // Returns whether chunk tasks were queued; otherwise the item is already complete.
     bool plan(std::size_t index, std::size_t planner) {
         ItemJob& job = jobs_[index];
+        if (stop_.stop_requested()) fail("cancelled");
         const Item& item = *job.item;
         if (job.destination.empty()) fail("download destination is empty");
         fs::path root(job.destination);
@@ -694,6 +697,7 @@ private:
             finish(state);
             return false;
         }
+        if (stop_.stop_requested()) fail("cancelled");
         state.remaining = state.chunks.size();
         std::lock_guard lock(queue_mutex_);
         for (auto [output, chunk] : state.chunks) queue_.push_back({&state, output, chunk});
@@ -732,12 +736,13 @@ private:
         }
     }
 
-    static void fetch_chunk(const ItemState& state, const Pending& output, const Chunk& chunk, std::size_t& host) {
+    void fetch_chunk(const ItemState& state, const Pending& output, const Chunk& chunk, std::size_t& host) const {
         const auto& hosts = *state.hosts;
         auto path = state.chunk_prefix + hex_hash(chunk.sha);
         std::string last_error;
         std::size_t attempts = std::min<std::size_t>(hosts.size() * 2, 6);
         for (std::size_t attempt = 0; attempt < attempts; ++attempt, ++host) {
+            if (stop_.stop_requested()) fail("cancelled");
             const auto& name = hosts[host % hosts.size()];
             try {
                 auto response = http_request("https://" + name + path);
@@ -816,9 +821,11 @@ private:
 
 } // namespace
 
-void download_items(Session& session, std::span<ItemJob> jobs, unsigned parallel_items, unsigned threads_per_item) {
+void download_items(Session& session, std::span<ItemJob> jobs, unsigned parallel_items, unsigned threads_per_item,
+                    std::stop_token stop) {
     if (jobs.empty()) return;
-    Downloader(session, jobs, parallel_items, std::max(1u, parallel_items) * std::max(1u, threads_per_item)).run();
+    Downloader(session, jobs, parallel_items, std::max(1u, parallel_items) * std::max(1u, threads_per_item),
+               std::move(stop)).run();
 }
 
 } // namespace pxsteamdl::detail

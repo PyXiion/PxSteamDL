@@ -6,6 +6,7 @@
 #include <functional>
 #include <memory>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -28,6 +29,10 @@ struct Options {
     unsigned threads_per_item = 8;
     // Called from worker threads.
     std::function<void(const Progress&)> on_progress;
+    // Cancellation: once stop is requested, in-flight chunk requests finish, remaining work is skipped and every
+    // unfinished item reports Result::error == "cancelled"; completed items stay ok and download() returns normally.
+    // As with failures, temporary files are removed and existing files of unfinished items are not replaced.
+    std::stop_token stop;
 };
 
 struct Result {

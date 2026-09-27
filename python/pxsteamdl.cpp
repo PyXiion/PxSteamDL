@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-#include "pxsteamdl/pxsteamdl.hpp"
-
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/filesystem.h>
 #include <nanobind/stl/optional.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
+
+#include "pxsteamdl/pxsteamdl.hpp"
 
 #include <optional>
 
@@ -18,7 +18,8 @@ using ProgressCallback = nb::typed<nb::callable, void(const pxsteamdl::Progress&
 
 std::vector<pxsteamdl::Result> download(pxsteamdl::Client& client, const std::vector<std::uint64_t>& ids,
                                         const std::filesystem::path& root, int parallel_items,
-                                        int threads_per_item, std::optional<ProgressCallback> on_progress) {
+                                        int threads_per_item, std::optional<ProgressCallback> on_progress,
+                                        const std::stop_source* cancel) {
     if (parallel_items < 1)
         throw nb::value_error("parallel_items must be >= 1");
     if (threads_per_item < 1)
@@ -27,6 +28,7 @@ std::vector<pxsteamdl::Result> download(pxsteamdl::Client& client, const std::ve
     pxsteamdl::Options options;
     options.parallel_items = static_cast<unsigned>(parallel_items);
     options.threads_per_item = static_cast<unsigned>(threads_per_item);
+    if (cancel) options.stop = cancel->get_token();
     if (on_progress) {
         // The caller's argument keeps the callable alive for the whole (synchronous) download,
         // so a borrowed handle avoids touching its refcount from worker threads without the GIL.
@@ -71,14 +73,22 @@ NB_MODULE(_pxsteamdl, m) {
                 .format(self.attr("item_id"), self.attr("title"), self.attr("path"), self.attr("error"));
         });
 
+    nb::class_<std::stop_source>(m, "CancelToken", "Cancels the Client.download calls it is passed to.")
+        .def(nb::init<>())
+        .def(
+            "cancel", [](std::stop_source& source) { source.request_stop(); },
+            "Requests stop; safe to call from any thread, repeated calls are no-ops.");
+
     nb::class_<pxsteamdl::Client>(m, "Client",
                                   "Anonymous Steam session. Thread-safe: one client may serve several threads.")
         .def(nb::init<>(), nb::call_guard<nb::gil_scoped_release>(),
              "Logs in to Steam anonymously; raises RuntimeError on failure.")
         .def("download", &download, "ids"_a, "root"_a, nb::kw_only(), "parallel_items"_a = 4,
-             "threads_per_item"_a = 8, "on_progress"_a = nb::none(),
+             "threads_per_item"_a = 8, "on_progress"_a = nb::none(), "cancel"_a.none() = nb::none(),
              "Downloads each item into root/<item id>/, updating existing copies incrementally.\n\n"
              "Per-item failures are reported in Result.error. on_progress is called from worker\n"
              "threads; exceptions it raises are reported as unraisable and do not stop the download.\n"
+             "After cancel.cancel(), in-flight chunk requests finish, remaining work is skipped and\n"
+             "unfinished items report error == \"cancelled\"; completed items stay ok.\n"
              "The GIL is released while downloading.");
 }

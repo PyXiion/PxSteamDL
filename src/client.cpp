@@ -39,7 +39,7 @@ std::vector<Result> Client::download(std::span<const std::uint64_t> item_ids,
         job_results.push_back(i);
     }
 
-    detail::download_items(*session_, jobs, options.parallel_items, options.threads_per_item);
+    detail::download_items(*session_, jobs, options.parallel_items, options.threads_per_item, options.stop);
     for (std::size_t j = 0; j < jobs.size(); ++j) results[job_results[j]].error = std::move(jobs[j].error);
     return results;
 }

@@ -57,8 +57,23 @@ jobs:
       - name: Smoke test
         shell: /tmp/venv/bin/python {0}
         run: |
-          import pathlib, pxsteamdl
+          import asyncio, pathlib, threading, pxsteamdl
           results = pxsteamdl.Client().download([2009463077], "/tmp/mods", on_progress=lambda p: None)
           print(results)
           assert results[0].ok, results[0].error
           assert (results[0].path / "About" / "About.xml").is_file()
+
+          async def download_async():
+              client = await pxsteamdl.AsyncClient.create()
+              loop_thread = threading.get_ident()
+              calls = []
+              def on_progress(p):
+                  assert threading.get_ident() == loop_thread
+                  calls.append(p)
+              results = await client.download([2009463077], "/tmp/mods-async", on_progress=on_progress)
+              print(results)
+              assert results[0].ok, results[0].error
+              assert (results[0].path / "About" / "About.xml").is_file()
+              assert calls
+
+          asyncio.run(download_async())
