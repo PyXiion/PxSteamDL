@@ -3,7 +3,6 @@ name: Wheels
 on:
   push:
     tags: ["v*"]
-    branches: [crossplatform] # TEMP: workflow_dispatch needs the file on main; removed before merge
   workflow_dispatch:
 
 jobs:
