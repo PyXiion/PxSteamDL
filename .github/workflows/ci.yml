@@ -15,9 +15,9 @@ jobs:
       - name: Install dependencies
         run: pacman -Syu --noconfirm base-devel cmake ninja curl openssl zlib xz zstd git
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: .cpm-cache
           key: cpm-${{ hashFiles('CMakeLists.txt') }}
@@ -42,9 +42,9 @@ jobs:
       - name: Install dependencies
         run: pacman -Syu --noconfirm base-devel cmake ninja curl openssl zlib xz zstd git python python-pip
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: .cpm-cache
           key: cpm-python-${{ hashFiles('CMakeLists.txt') }}
