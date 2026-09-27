@@ -57,6 +57,8 @@ CPMAddPackage(
         "XZ_MICROLZMA_DECODER OFF"
         "XZ_DOC OFF"
 )
+# xz exports its public headers only through the installed package config.
+target_include_directories(liblzma SYSTEM INTERFACE ${xz_SOURCE_DIR}/src/liblzma/api)
 
 CPMAddPackage(
     NAME zstd
