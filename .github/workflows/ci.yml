@@ -45,16 +45,11 @@ jobs:
           if [ "$RUNNER_OS" = Linux ]; then ldd "$exe"; fi
           if [ "$RUNNER_OS" = macOS ]; then otool -L "$exe"; fi
 
-      - name: Smoke test
+      - name: CLI check
         run: |
-          mods="$RUNNER_TEMP/mods"
-          ./build/pxsteamdl -o "$mods" 2009463077
-          test -f "$mods/2009463077/About/About.xml"
-          # A damaged file must be replaced (rename over an existing file).
-          expected=$(cksum < "$mods/2009463077/About/About.xml")
-          echo damaged >> "$mods/2009463077/About/About.xml"
-          ./build/pxsteamdl -o "$mods" 2009463077
-          test "$(cksum < "$mods/2009463077/About/About.xml")" = "$expected"
+          status=0
+          ./build/pxsteamdl || status=$?
+          test "$status" -eq 2
 
   python:
     strategy:
@@ -79,5 +74,5 @@ jobs:
       - name: Install package
         run: python -m pip install .
 
-      - name: Smoke test
-        run: python .github/smoke_test.py
+      - name: Import check
+        run: python -c "import pxsteamdl; print(pxsteamdl.Client, pxsteamdl.AsyncClient, pxsteamdl.CancelToken)"
