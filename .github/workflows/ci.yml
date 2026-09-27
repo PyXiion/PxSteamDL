@@ -53,9 +53,11 @@ jobs:
         run: |
           python -m venv /tmp/venv
           /tmp/venv/bin/pip install .
+          # The runner rejects an absolute path as `shell:`, so put the venv first on PATH instead.
+          echo /tmp/venv/bin >> "$GITHUB_PATH"
 
       - name: Smoke test
-        shell: /tmp/venv/bin/python {0}
+        shell: python {0}
         run: |
           import asyncio, pathlib, threading, pxsteamdl
           results = pxsteamdl.Client().download([2009463077], "/tmp/mods", on_progress=lambda p: None)
