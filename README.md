@@ -51,6 +51,8 @@ The exit code is 1 if any item fails.
 Ctrl-C stops the batch: requests in flight finish, unfinished items are reported as `cancelled`, and the exit code is 130.
 A second Ctrl-C quits immediately.
 
+Standalone prebuilt binaries for Linux x86_64, macOS arm64, and Windows x64 are attached to [GitHub Releases](https://github.com/PyXiion/PxSteamDL/releases).
+
 ## Library
 
 ```cpp
