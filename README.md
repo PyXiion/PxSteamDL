@@ -1,0 +1,73 @@
+# PxSteamDL
+
+A small C++20 library and CLI that replaces `steamcmd +login anonymous +workshop_download_item 294100 <id>`.
+It logs in to Steam anonymously and downloads RimWorld Workshop items in parallel.
+
+**Disclaimer:** PxSteamDL is not affiliated with or endorsed by Valve. It only downloads content that Steam serves to anonymous accounts.
+
+It talks to Steam directly:
+
+- a CM WebSocket session for anonymous logon, the depot key and manifest request codes;
+- the public Web API for item details and CDN servers;
+- SteamPipe CDN over HTTPS for manifests and chunks.
+
+The protocol follows [DepotDownloader](https://github.com/SteamRE/DepotDownloader) / [SteamKit2](https://github.com/SteamRE/SteamKit) (`-app 294100 -pubfile <id>`).
+
+## Why not an existing library
+
+| Project | Language | Notes |
+|---|---|---|
+| DepotDownloader / SteamKit2 | C# | Does this exact job (`-pubfile`), but needs the .NET runtime |
+| ValvePython/steam, node-steam-user | Python / JS | Full clients, wrong runtime |
+| steamdepot, steam-vent | Rust | Depot downloaders, not C++ |
+| SteamPP | C++ | Unmaintained SteamKit port with chat/logon only; no depot/CDN support, legacy TCP |
+
+None of them is a maintained C++ library, so this project implements the needed subset.
+
+## Build
+
+Dependencies: libcurl ≥ 8.11 (with WebSocket support), OpenSSL 3 (libcrypto), zlib, liblzma, libzstd.
+[CPM](https://github.com/cpm-cmake/CPM.cmake) fetches nlohmann_json.
+
+```sh
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+```
+
+## CLI
+
+```sh
+pxsteamdl [-o DIR] [-j PARALLEL_ITEMS] [-t THREADS_PER_ITEM] ITEM_ID...
+```
+
+Each item goes into `DIR/<ITEM_ID>/`, which matches steamcmd's `steamapps/workshop/content/294100/<ITEM_ID>`.
+The exit code is 1 if any item fails.
+
+## Library
+
+```cpp
+#include <pxsteamdl/pxsteamdl.hpp>
+
+pxsteamdl::Client client;  // anonymous logon; throws on failure
+std::vector<std::uint64_t> ids{2009463077, 818773962};
+pxsteamdl::Options options;
+options.on_progress = [](const pxsteamdl::Progress& p) { /* called from worker threads */ };
+for (const auto& r : client.download(ids, "mods", options))
+    if (!r.error.empty()) std::fprintf(stderr, "%llu: %s\n", (unsigned long long)r.item_id, r.error.c_str());
+```
+
+Link against the `PxSteamDL::pxsteamdl` CMake target (e.g. after `add_subdirectory` or `CPMAddPackage`).
+The CLI executable is built as `build/pxsteamdl`.
+
+## Behaviour
+
+- Updates are incremental: a file whose size and SHA-1 already match the manifest is not downloaded again. Files and directories that are not in the manifest are deleted, as steamcmd does.
+- Files are assembled under a temporary name and renamed into place after the SHA-1 check, so an interrupted run never leaves a truncated file under its real name.
+- Every chunk is checked (Adler-32 and size) after it is decrypted and decompressed.
+- Manifest paths are untrusted: absolute paths and `..` components are rejected.
+- A failed item is reported in `Result::error` and does not stop the other items in the batch.
+
+## License
+
+PxSteamDL is licensed under the GNU Lesser General Public License v3.0 or later (`LGPL-3.0-or-later`).
+See [COPYING.LESSER](COPYING.LESSER) and [COPYING](COPYING).

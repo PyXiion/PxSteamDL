@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Ubuntu's libcurl is too old for WebSockets (needs >= 8.11 with ws support).
+    container: archlinux:latest
+    env:
+      CPM_SOURCE_CACHE: ${{ github.workspace }}/.cpm-cache
+    steps:
+      - name: Install dependencies
+        run: pacman -Syu --noconfirm base-devel cmake ninja curl openssl zlib xz zstd git
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: .cpm-cache
+          key: cpm-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Smoke test
+        run: |
+          ./build/pxsteamdl -o /tmp/mods 2009463077
+          test -f /tmp/mods/2009463077/About/About.xml

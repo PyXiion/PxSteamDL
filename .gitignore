@@ -1,0 +1,15 @@
+build/
+.cache/
+.vscode/
+.idea/
+compile_commands.json
+*.o
+*.obj
+*.a
+*.lib
+*.dll
+*.dylib
+*.so
+*.exe
+CMakeUserPresets.json
+.cpm-cache/
