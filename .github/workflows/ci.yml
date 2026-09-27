@@ -6,21 +6,30 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    # Ubuntu's libcurl is too old for WebSockets (needs >= 8.11 with ws support).
-    container: archlinux:latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     env:
       CPM_SOURCE_CACHE: ${{ github.workspace }}/.cpm-cache
+    defaults:
+      run:
+        shell: bash
     steps:
-      - name: Install dependencies
-        run: pacman -Syu --noconfirm base-devel cmake ninja curl openssl zlib xz zstd git
-
       - uses: actions/checkout@v7
 
       - uses: actions/cache@v6
         with:
           path: .cpm-cache
-          key: cpm-${{ hashFiles('CMakeLists.txt') }}
+          key: cpm-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
+
+      - uses: ilammy/msvc-dev-cmd@v1.13.0
+        if: runner.os == 'Windows'
+
+      - name: Install Ninja
+        if: runner.os == 'macOS'
+        run: brew install ninja
 
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -28,54 +37,47 @@ jobs:
       - name: Build
         run: cmake --build build
 
+      - name: Binary size
+        run: |
+          exe=build/pxsteamdl${{ runner.os == 'Windows' && '.exe' || '' }}
+          ls -l "$exe"
+          if [ "$RUNNER_OS" != Windows ]; then cp "$exe" stripped && strip stripped && ls -l stripped; fi
+          if [ "$RUNNER_OS" = Linux ]; then ldd "$exe"; fi
+          if [ "$RUNNER_OS" = macOS ]; then otool -L "$exe"; fi
+
       - name: Smoke test
         run: |
-          ./build/pxsteamdl -o /tmp/mods 2009463077
-          test -f /tmp/mods/2009463077/About/About.xml
+          mods="$RUNNER_TEMP/mods"
+          ./build/pxsteamdl -o "$mods" 2009463077
+          test -f "$mods/2009463077/About/About.xml"
+          # A damaged file must be replaced (rename over an existing file).
+          expected=$(cksum < "$mods/2009463077/About/About.xml")
+          echo damaged >> "$mods/2009463077/About/About.xml"
+          ./build/pxsteamdl -o "$mods" 2009463077
+          test "$(cksum < "$mods/2009463077/About/About.xml")" = "$expected"
 
   python:
-    runs-on: ubuntu-latest
-    container: archlinux:latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     env:
       CPM_SOURCE_CACHE: ${{ github.workspace }}/.cpm-cache
     steps:
-      - name: Install dependencies
-        run: pacman -Syu --noconfirm base-devel cmake ninja curl openssl zlib xz zstd git python python-pip
-
       - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
 
       - uses: actions/cache@v6
         with:
           path: .cpm-cache
-          key: cpm-python-${{ hashFiles('CMakeLists.txt') }}
+          key: cpm-python-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
 
       - name: Install package
-        run: |
-          python -m venv /tmp/venv
-          /tmp/venv/bin/pip install .
-          # The runner rejects an absolute path as `shell:`, so put the venv first on PATH instead.
-          echo /tmp/venv/bin >> "$GITHUB_PATH"
+        run: python -m pip install .
 
       - name: Smoke test
-        shell: python {0}
-        run: |
-          import asyncio, pathlib, threading, pxsteamdl
-          results = pxsteamdl.Client().download([2009463077], "/tmp/mods", on_progress=lambda p: None)
-          print(results)
-          assert results[0].ok, results[0].error
-          assert (results[0].path / "About" / "About.xml").is_file()
-
-          async def download_async():
-              client = await pxsteamdl.AsyncClient.create()
-              loop_thread = threading.get_ident()
-              calls = []
-              def on_progress(p):
-                  assert threading.get_ident() == loop_thread
-                  calls.append(p)
-              results = await client.download([2009463077], "/tmp/mods-async", on_progress=on_progress)
-              print(results)
-              assert results[0].ok, results[0].error
-              assert (results[0].path / "About" / "About.xml").is_file()
-              assert calls
-
-          asyncio.run(download_async())
+        run: python .github/smoke_test.py

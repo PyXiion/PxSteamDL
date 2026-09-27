@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "pxsteamdl/pxsteamdl.hpp"
 
+#include <atomic>
 #include <charconv>
 #include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <exception>
-#include <pthread.h>
 #include <string_view>
 #include <thread>
 
@@ -25,14 +24,20 @@ bool parse(std::string_view text, auto& value) {
     return ec == std::errc{} && end == text.data() + text.size();
 }
 
+std::atomic<bool> interrupted{false};
+static_assert(std::atomic<bool>::is_always_lock_free, "must be usable from a signal handler");
+
 // Ctrl-C requests a graceful stop; a second one quits immediately.
-void watch_interrupts(std::stop_source stop, sigset_t signals) {
-    int signal = 0;
-    sigwait(&signals, &signal);
+extern "C" void on_interrupt(int) {
+    if (interrupted.exchange(true)) std::_Exit(130);
+    std::signal(SIGINT, on_interrupt); // Windows resets the handler before calling it
+}
+
+// The handler may only touch lock-free atomics, so a thread relays the flag to the stop source.
+void watch_interrupts(std::stop_source stop) {
+    while (!interrupted) std::this_thread::sleep_for(std::chrono::milliseconds(100));
     std::fputs("\ninterrupted, stopping (Ctrl-C again to quit immediately)\n", stderr);
     stop.request_stop();
-    sigwait(&signals, &signal);
-    std::_Exit(130);
 }
 
 } // namespace
@@ -63,14 +68,10 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    // Block SIGINT before any thread starts, so only the watcher receives it.
-    sigset_t signals;
-    sigemptyset(&signals);
-    sigaddset(&signals, SIGINT);
-    pthread_sigmask(SIG_BLOCK, &signals, nullptr);
     std::stop_source stop;
     options.stop = stop.get_token();
-    std::thread(watch_interrupts, stop, signals).detach();
+    std::signal(SIGINT, on_interrupt);
+    std::thread(watch_interrupts, stop).detach();
 
     try {
         auto start = std::chrono::steady_clock::now();

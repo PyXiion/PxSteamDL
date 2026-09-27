@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "internal.hpp"
 
-#include <nlohmann/json.hpp>
-#include <openssl/evp.h>
 #include <lzma.h>
+#include <mbedtls/aes.h>
+#include <mbedtls/base64.h>
+#include <mbedtls/sha1.h>
+#include <nlohmann/json.hpp>
 #include <zlib.h>
 #include <zstd.h>
 
@@ -19,13 +21,18 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <random>
 #include <set>
+#include <system_error>
 #include <thread>
 #include <utility>
 
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <fcntl.h>
-#include <sys/stat.h>
 #include <unistd.h>
+#endif
 
 namespace pxsteamdl::detail {
 namespace {
@@ -132,28 +139,23 @@ Bytes unzip_single(std::span<const std::uint8_t> zip) {
 }
 
 Bytes decrypt(std::span<const std::uint8_t> encrypted, const Key& key) {
-    if (encrypted.size() < 32 || (encrypted.size() - 16) % 16 || encrypted.size() > INT_MAX)
-        fail("AES: invalid ciphertext length");
-    using Context = std::unique_ptr<EVP_CIPHER_CTX, decltype(&EVP_CIPHER_CTX_free)>;
-    Context ctx(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_free);
-    if (!ctx) fail("AES: cipher initialization failed");
+    if (encrypted.size() < 32 || (encrypted.size() - 16) % 16) fail("AES: invalid ciphertext length");
+    mbedtls_aes_context aes;
+    mbedtls_aes_init(&aes);
     std::array<std::uint8_t, 16> iv{};
-    int count = 0;
-    if (EVP_DecryptInit_ex(ctx.get(), EVP_aes_256_ecb(), nullptr, key.data(), nullptr) != 1 ||
-        EVP_CIPHER_CTX_set_padding(ctx.get(), 0) != 1 ||
-        EVP_DecryptUpdate(ctx.get(), iv.data(), &count, encrypted.data(), 16) != 1 || count != 16 ||
-        EVP_DecryptFinal_ex(ctx.get(), iv.data() + count, &count) != 1)
-        fail("AES: IV decryption failed");
-
     Bytes plain(encrypted.size() - 16);
-    int written = 0, final = 0;
-    if (EVP_DecryptInit_ex(ctx.get(), EVP_aes_256_cbc(), nullptr, key.data(), iv.data()) != 1 ||
-        EVP_CIPHER_CTX_set_padding(ctx.get(), 1) != 1 ||
-        EVP_DecryptUpdate(ctx.get(), plain.data(), &written, encrypted.data() + 16,
-                          static_cast<int>(encrypted.size() - 16)) != 1 ||
-        EVP_DecryptFinal_ex(ctx.get(), plain.data() + written, &final) != 1)
+    int ecb = mbedtls_aes_setkey_dec(&aes, key.data(), 256);
+    if (ecb == 0) ecb = mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_DECRYPT, encrypted.data(), iv.data());
+    int cbc = ecb == 0 ? mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, plain.size(), iv.data(),
+                                               encrypted.data() + 16, plain.data())
+                       : 0;
+    mbedtls_aes_free(&aes);
+    if (ecb != 0) fail("AES: IV decryption failed");
+    std::uint8_t padding = plain.back();
+    if (cbc != 0 || padding == 0 || padding > 16 ||
+        !std::all_of(plain.end() - padding, plain.end(), [padding](std::uint8_t b) { return b == padding; }))
         fail("AES: CBC decryption or PKCS7 padding failed");
-    plain.resize(written + final);
+    plain.resize(plain.size() - padding);
     return plain;
 }
 
@@ -164,22 +166,49 @@ std::string decrypt_name(std::string_view encoded, const Key& key) {
         if (c == '\r' || c == '\n' || c == ' ' || c == '\t') continue;
         base64.push_back(c);
     }
-    if (base64.empty() || base64.size() % 4 || base64.size() > INT_MAX) fail("manifest: invalid base64 filename");
+    if (base64.empty() || base64.size() % 4) fail("manifest: invalid base64 filename");
     Bytes encrypted(base64.size() / 4 * 3);
-    int length = EVP_DecodeBlock(encrypted.data(), reinterpret_cast<const unsigned char*>(base64.data()),
-                                 static_cast<int>(base64.size()));
-    if (length < 0) fail("manifest: invalid base64 filename");
-    std::size_t padding = (base64.back() == '=') + (base64.size() > 1 && base64[base64.size() - 2] == '=');
-    encrypted.resize(static_cast<std::size_t>(length) - padding);
+    std::size_t length = 0;
+    if (mbedtls_base64_decode(encrypted.data(), encrypted.size(), &length,
+                              reinterpret_cast<const unsigned char*>(base64.data()), base64.size()) != 0)
+        fail("manifest: invalid base64 filename");
+    encrypted.resize(length);
     Bytes plain = decrypt(encrypted, key);
     while (!plain.empty() && plain.back() == 0) plain.pop_back();
     return {reinterpret_cast<const char*>(plain.data()), plain.size()};
 }
 
+// Manifest names are UTF-8; converting through std::string would use the ANSI code page on Windows.
+fs::path utf8_path(std::string_view text) {
+    return fs::path(std::u8string(text.begin(), text.end()));
+}
+
+std::string utf8(const fs::path& path) {
+    auto text = path.generic_u8string();
+    return {text.begin(), text.end()};
+}
+
+// Non-empty names Win32 would reinterpret: stream/drive separators, wildcards, device names, and trailing dots or
+// spaces (silently stripped, so "a." would alias "a"). Always false elsewhere.
+bool windows_unsafe([[maybe_unused]] std::string_view part) {
+#ifdef _WIN32
+    if (part.find_first_of("<>:\"|?*") != std::string_view::npos || part.back() == '.' || part.back() == ' ' ||
+        std::any_of(part.begin(), part.end(), [](char c) { return static_cast<unsigned char>(c) < 0x20; }))
+        return true;
+    std::string stem(part.substr(0, part.find('.')));
+    std::transform(stem.begin(), stem.end(), stem.begin(),
+                   [](char c) { return c >= 'a' && c <= 'z' ? static_cast<char>(c - 'a' + 'A') : c; });
+    if (stem == "CON" || stem == "PRN" || stem == "AUX" || stem == "NUL") return true;
+    return stem.size() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem[3] >= '1' && stem[3] <= '9';
+#else
+    return false;
+#endif
+}
+
 void normalize_path(std::string& path) {
     std::replace(path.begin(), path.end(), '\\', '/');
     if (path.empty() || path.front() == '/' || path.back() == '/' ||
-        path.find('\0') != std::string::npos || fs::path(path).is_absolute())
+        path.find('\0') != std::string::npos || utf8_path(path).has_root_path())
         fail("manifest: unsafe path: " + path);
     std::size_t from = 0;
     for (std::size_t end; from < path.size(); from = end + 1) {
@@ -187,6 +216,7 @@ void normalize_path(std::string& path) {
         if (end == std::string::npos) end = path.size();
         std::string_view part(path.data() + from, end - from);
         if (part.empty() || part == "." || part == "..") fail("manifest: unsafe path: " + path);
+        if (windows_unsafe(part)) fail("manifest: path not representable on Windows: " + path);
         if (end == path.size()) break;
     }
 }
@@ -354,79 +384,195 @@ Bytes expand_chunk(std::span<const std::uint8_t> encrypted, const Key& key, cons
     return result;
 }
 
-Hash sha_fd(int fd, std::uint64_t size) {
-    using Context = std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)>;
-    Context ctx(EVP_MD_CTX_new(), EVP_MD_CTX_free);
-    if (!ctx || EVP_DigestInit_ex(ctx.get(), EVP_sha1(), nullptr) != 1) fail("SHA-1: initialization failed");
-    std::array<std::uint8_t, 65536> buffer{};
-    for (std::uint64_t offset = 0; offset < size;) {
-        std::size_t length = static_cast<std::size_t>(std::min<std::uint64_t>(buffer.size(), size - offset));
-        auto n = pread(fd, buffer.data(), length, static_cast<off_t>(offset));
-        if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) fail("SHA-1: failed to read file");
-        if (EVP_DigestUpdate(ctx.get(), buffer.data(), n) != 1) fail("SHA-1: digest update failed");
-        offset += static_cast<std::size_t>(n);
+// Positional I/O on a native file handle: worker threads write distinct chunk ranges of one file concurrently.
+class NativeFile {
+public:
+    NativeFile() = default;
+    NativeFile(const NativeFile&) = delete;
+    NativeFile& operator=(const NativeFile&) = delete;
+    ~NativeFile() { close(); }
+
+    // On failure the reason is available through last_error() until the next system call.
+#ifdef _WIN32
+    // Existing file for reading; FILE_FLAG_OPEN_REPARSE_POINT keeps a swapped-in symlink from being followed.
+    bool open_read(const fs::path& path) {
+        handle_ = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                              FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        return handle_ != INVALID_HANDLE_VALUE;
     }
+    // New file; fails (already_exists()) if the path exists.
+    bool create(const fs::path& path) {
+        handle_ = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
+                              CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        return handle_ != INVALID_HANDLE_VALUE;
+    }
+    bool resize(std::uint64_t size) {
+        FILE_END_OF_FILE_INFO info{};
+        info.EndOfFile.QuadPart = static_cast<LONGLONG>(size);
+        return SetFileInformationByHandle(handle_, FileEndOfFileInfo, &info, sizeof info);
+    }
+    bool write_at(std::uint64_t offset, std::span<const std::uint8_t> data) const {
+        while (!data.empty()) {
+            OVERLAPPED position = at(offset);
+            DWORD written = 0;
+            auto length = static_cast<DWORD>(std::min<std::size_t>(data.size(), 1u << 30));
+            if (!WriteFile(handle_, data.data(), length, &written, &position) || written == 0) return false;
+            data = data.subspan(written);
+            offset += written;
+        }
+        return true;
+    }
+    // Returns the number of bytes read, 0 at end of file, or -1.
+    std::int64_t read_at(std::uint64_t offset, std::span<std::uint8_t> buffer) const {
+        OVERLAPPED position = at(offset);
+        DWORD read = 0;
+        auto length = static_cast<DWORD>(std::min<std::size_t>(buffer.size(), 1u << 30));
+        if (ReadFile(handle_, buffer.data(), length, &read, &position)) return read;
+        return GetLastError() == ERROR_HANDLE_EOF ? 0 : -1;
+    }
+    void close() {
+        if (handle_ != INVALID_HANDLE_VALUE) CloseHandle(handle_);
+        handle_ = INVALID_HANDLE_VALUE;
+    }
+    static std::string last_error() { return std::system_category().message(static_cast<int>(GetLastError())); }
+    static bool already_exists() { return GetLastError() == ERROR_FILE_EXISTS; }
+
+private:
+    HANDLE handle_ = INVALID_HANDLE_VALUE;
+
+    static OVERLAPPED at(std::uint64_t offset) {
+        OVERLAPPED position{};
+        position.Offset = static_cast<DWORD>(offset);
+        position.OffsetHigh = static_cast<DWORD>(offset >> 32);
+        return position;
+    }
+#else
+    bool open_read(const fs::path& path) {
+        fd_ = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+        return fd_ >= 0;
+    }
+    bool create(const fs::path& path) {
+        fd_ = ::open(path.c_str(), O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+        return fd_ >= 0;
+    }
+    bool resize(std::uint64_t size) { return ftruncate(fd_, static_cast<off_t>(size)) == 0; }
+    bool write_at(std::uint64_t offset, std::span<const std::uint8_t> data) const {
+        while (!data.empty()) {
+            auto n = pwrite(fd_, data.data(), data.size(), static_cast<off_t>(offset));
+            if (n < 0 && errno == EINTR) continue;
+            if (n <= 0) return false;
+            data = data.subspan(static_cast<std::size_t>(n));
+            offset += static_cast<std::uint64_t>(n);
+        }
+        return true;
+    }
+    std::int64_t read_at(std::uint64_t offset, std::span<std::uint8_t> buffer) const {
+        for (;;) {
+            auto n = pread(fd_, buffer.data(), buffer.size(), static_cast<off_t>(offset));
+            if (n >= 0 || errno != EINTR) return n;
+        }
+    }
+    void close() {
+        if (fd_ >= 0) ::close(fd_);
+        fd_ = -1;
+    }
+    static std::string last_error() { return std::generic_category().message(errno); }
+    static bool already_exists() { return errno == EEXIST; }
+
+private:
+    int fd_ = -1;
+#endif
+};
+
+Hash sha_file(const NativeFile& file, std::uint64_t size) {
+    mbedtls_sha1_context ctx;
+    mbedtls_sha1_init(&ctx);
+    std::array<std::uint8_t, 65536> buffer{};
     Hash hash{};
-    unsigned length = 0;
-    if (EVP_DigestFinal_ex(ctx.get(), hash.data(), &length) != 1 || length != hash.size())
-        fail("SHA-1: finalization failed");
+    bool ok = mbedtls_sha1_starts(&ctx) == 0;
+    for (std::uint64_t offset = 0; ok && offset < size;) {
+        auto length = static_cast<std::size_t>(std::min<std::uint64_t>(buffer.size(), size - offset));
+        auto n = file.read_at(offset, std::span(buffer.data(), length));
+        ok = n > 0 && mbedtls_sha1_update(&ctx, buffer.data(), static_cast<std::size_t>(n)) == 0;
+        offset += static_cast<std::uint64_t>(n);
+    }
+    ok = ok && mbedtls_sha1_finish(&ctx, hash.data()) == 0;
+    mbedtls_sha1_free(&ctx);
+    if (!ok) fail("SHA-1: failed to read file");
     return hash;
 }
 
 // Steam manifests carry an all-zero sha_content for empty files rather than SHA-1(""); size already proves their content.
 // (DepotDownloader never checks whole-file hashes, only per-chunk Adler32.)
-bool content_matches(int fd, const File& file) {
-    return file.size == 0 || sha_fd(fd, file.size) == file.sha;
+bool content_matches(const NativeFile& contents, const File& file) {
+    return file.size == 0 || sha_file(contents, file.size) == file.sha;
 }
 
 bool up_to_date(const fs::path& path, const File& file) {
     if (!fs::is_regular_file(fs::symlink_status(path))) return false;
     if (fs::file_size(path) != file.size) return false;
-    int fd = open(path.c_str(), O_RDONLY | O_NOFOLLOW);
-    if (fd < 0) fail("cannot open file for SHA-1 verification: " + path.string() + ": " + std::strerror(errno));
-    try {
-        bool matches = content_matches(fd, file);
-        close(fd);
-        return matches;
-    } catch (...) {
-        close(fd);
-        throw;
+    NativeFile existing;
+    if (!existing.open_read(path)) {
+        auto reason = NativeFile::last_error();
+        fail("cannot open file for SHA-1 verification: " + utf8(path) + ": " + reason);
     }
+    return content_matches(existing, file);
 }
 
+constexpr auto regular_perms = fs::perms::owner_read | fs::perms::owner_write | fs::perms::group_read |
+                               fs::perms::others_read;
+constexpr auto exec_perms = fs::perms::owner_exec | fs::perms::group_exec | fs::perms::others_exec;
+
+// A file being assembled in a temporary sibling of its final path.
 struct Pending {
     const File* file;
     fs::path final;
-    std::string temp;
-    int fd = -1;
+    fs::path temp;
+    NativeFile out;
 
     Pending(const File& source, fs::path destination) : file(&source), final(std::move(destination)) {
-        temp = final.string() + ".pxsteamdl.XXXXXX";
-        fd = mkstemp(temp.data());
-        if (fd < 0) fail("cannot create temporary file for " + final.string() + ": " + std::strerror(errno));
-        if (ftruncate(fd, static_cast<off_t>(source.size)) != 0) {
-            auto reason = std::string(std::strerror(errno));
-            close(fd);
-            unlink(temp.c_str());
-            fail("cannot size temporary file for " + final.string() + ": " + reason);
+        thread_local std::mt19937_64 random(std::random_device{}());
+        for (;;) {
+            temp = final;
+            temp += ".pxsteamdl." + std::to_string(random());
+            if (out.create(temp)) break;
+            if (!NativeFile::already_exists()) {
+                auto reason = NativeFile::last_error();
+                fail("cannot create temporary file for " + utf8(final) + ": " + reason);
+            }
+        }
+        if (!out.resize(source.size)) {
+            auto reason = NativeFile::last_error();
+            discard();
+            fail("cannot size temporary file for " + utf8(final) + ": " + reason);
         }
     }
-    ~Pending() {
-        if (fd >= 0) close(fd);
-        if (!temp.empty()) unlink(temp.c_str());
-    }
+    ~Pending() { discard(); }
     Pending(const Pending&) = delete;
     Pending& operator=(const Pending&) = delete;
+
+    // Moves the finished temporary file over the final path.
+    void commit(fs::perms perms) {
+        out.close();
+        fs::permissions(temp, perms);
+        if (fs::is_directory(fs::symlink_status(final))) fs::remove_all(final);
+        fs::rename(temp, final);
+        temp.clear();
+    }
+
+private:
+    void discard() {
+        out.close();
+        std::error_code ignored;
+        if (!temp.empty()) fs::remove(temp, ignored);
+        temp.clear();
+    }
 };
 
-void write_chunk(int fd, const Chunk& chunk, const Bytes& bytes) {
-    std::size_t pos = 0;
-    while (pos < bytes.size()) {
-        auto n = pwrite(fd, bytes.data() + pos, bytes.size() - pos, static_cast<off_t>(chunk.offset + pos));
-        if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) fail("chunk: pwrite failed: " + std::string(std::strerror(errno)));
-        pos += static_cast<std::size_t>(n);
+void write_chunk(const NativeFile& out, const Chunk& chunk, const Bytes& bytes) {
+    if (!out.write_at(chunk.offset, bytes)) {
+        auto reason = NativeFile::last_error();
+        fail("chunk: write failed: " + reason);
     }
 }
 
@@ -489,7 +635,7 @@ void prune(const fs::path& root, const fs::path& dir, const std::set<std::string
     std::vector<fs::path> children;
     for (const auto& entry : fs::directory_iterator(dir)) children.push_back(entry.path());
     for (const auto& child : children) {
-        auto relative = child.lexically_relative(root).generic_string();
+        auto relative = utf8(child.lexically_relative(root));
         if (!expected.contains(relative)) fs::remove_all(child);
         else if (fs::is_directory(fs::symlink_status(child))) prune(root, child, expected);
     }
@@ -618,7 +764,7 @@ private:
         if (stop_.stop_requested()) fail("cancelled");
         const Item& item = *job.item;
         if (job.destination.empty()) fail("download destination is empty");
-        fs::path root(job.destination);
+        const fs::path& root = job.destination;
         if (!item.file_url.empty() && item.manifest_id == 0) {
             download_legacy(job, root);
             return false;
@@ -657,9 +803,9 @@ private:
             if (!declared.insert(file.name).second) fail("manifest: duplicate path: " + file.name);
             state.expected.insert(file.name);
             if (file.flags & 0x40) dirs.insert(file.name);
-            for (auto parent = fs::path(file.name).parent_path(); !parent.empty(); parent = parent.parent_path()) {
-                state.expected.insert(parent.generic_string());
-                dirs.insert(parent.generic_string());
+            for (auto parent = utf8_path(file.name).parent_path(); !parent.empty(); parent = parent.parent_path()) {
+                state.expected.insert(utf8(parent));
+                dirs.insert(utf8(parent));
             }
         }
         for (const auto& file : state.files)
@@ -673,11 +819,11 @@ private:
             auto depth_b = std::count(b.begin(), b.end(), '/');
             return depth_a == depth_b ? a < b : depth_a < depth_b;
         });
-        for (const auto& dir : sorted_dirs) ensure_directory(root / dir);
+        for (const auto& dir : sorted_dirs) ensure_directory(root / utf8_path(dir));
 
         for (const auto& file : state.files) {
             if (file.flags & (0x40 | 0x200)) continue;
-            auto path = root / file.name;
+            auto path = root / utf8_path(file.name);
             if (up_to_date(path, file)) {
                 if (file.flags & (0x20 | 0x80))
                     fs::permissions(path, fs::perms::owner_exec | fs::perms::group_exec | fs::perms::others_exec,
@@ -750,7 +896,7 @@ private:
                     last_error = name + ": HTTP " + std::to_string(response.status);
                     continue;
                 }
-                write_chunk(output.fd, chunk, expand_chunk(response.body, state.key, chunk));
+                write_chunk(output.out, chunk, expand_chunk(response.body, state.key, chunk));
                 return;
             } catch (const std::exception& e) {
                 last_error = name + ": " + e.what();
@@ -775,19 +921,26 @@ private:
 
     static void finalize(ItemState& state) {
         for (auto& output : state.pending) {
-            if (!content_matches(output->fd, *output->file)) fail("file SHA-1 mismatch: " + output->file->name);
-            auto mode = static_cast<mode_t>(0644 | ((output->file->flags & (0x20 | 0x80)) ? 0111 : 0));
-            if (fchmod(output->fd, mode) != 0) fail("chmod failed for " + output->file->name + ": " + std::strerror(errno));
-            if (fs::is_directory(fs::symlink_status(output->final))) fs::remove_all(output->final);
-            fs::rename(output->temp, output->final);
-            output->temp.clear();
+            if (!content_matches(output->out, *output->file)) fail("file SHA-1 mismatch: " + output->file->name);
+            output->commit((output->file->flags & (0x20 | 0x80)) ? regular_perms | exec_perms : regular_perms);
         }
         for (const auto& file : state.files) {
             if (!(file.flags & 0x200)) continue;
-            auto path = state.root / file.name;
-            if (fs::is_symlink(fs::symlink_status(path)) && fs::read_symlink(path) == fs::path(file.link_target)) continue;
+            auto path = state.root / utf8_path(file.name);
+            auto target = utf8_path(file.link_target).make_preferred();
+            if (fs::is_symlink(fs::symlink_status(path)) && fs::read_symlink(path) == target) continue;
             fs::remove_all(path);
-            fs::create_symlink(file.link_target, path);
+            std::error_code error;
+            // Windows distinguishes directory symlinks; elsewhere both calls are the same.
+            if (fs::is_directory(path.parent_path() / target)) fs::create_directory_symlink(target, path, error);
+            else fs::create_symlink(target, path, error);
+            if (error) {
+                auto message = "cannot create symlink " + file.name + " -> " + file.link_target + ": " + error.message();
+#ifdef _WIN32
+                message += " (Windows allows symlinks only with Developer Mode enabled or as administrator)";
+#endif
+                fail(message);
+            }
         }
         prune(state.root, state.root, state.expected);
     }
@@ -796,8 +949,9 @@ private:
         const Item& item = *job.item;
         std::string filename = item.filename;
         std::replace(filename.begin(), filename.end(), '\\', '/');
-        auto name = fs::path(filename).filename().string();
-        if (name.empty() || name == "." || name == "..") fail("legacy item has no safe filename");
+        auto name = utf8_path(filename).filename();
+        if (name.empty() || name == "." || name == ".." || windows_unsafe(utf8(name)))
+            fail("legacy item has no safe filename");
         if (fs::is_symlink(fs::symlink_status(root))) fail("destination must not be a symlink");
         fs::create_directories(root);
         auto response = http_request(item.file_url);
@@ -805,16 +959,11 @@ private:
         File legacy;
         legacy.size = response.body.size();
         Pending output(legacy, root / name);
-        std::size_t offset = 0;
-        while (offset < response.body.size()) {
-            auto n = write(output.fd, response.body.data() + offset, response.body.size() - offset);
-            if (n < 0 && errno == EINTR) continue;
-            if (n <= 0) fail("legacy file write failed: " + std::string(std::strerror(errno)));
-            offset += static_cast<std::size_t>(n);
+        if (!output.out.write_at(0, response.body)) {
+            auto reason = NativeFile::last_error();
+            fail("legacy file write failed: " + reason);
         }
-        if (fchmod(output.fd, 0644) != 0) fail("legacy file chmod failed: " + std::string(std::strerror(errno)));
-        fs::rename(output.temp, output.final);
-        output.temp.clear();
+        output.commit(regular_perms);
         if (job.progress) job.progress(legacy.size, legacy.size);
     }
 };

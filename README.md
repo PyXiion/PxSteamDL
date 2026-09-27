@@ -26,8 +26,14 @@ None of them is a maintained C++ library, so this project implements the needed 
 
 ## Build
 
-Dependencies: libcurl ≥ 8.11 (with WebSocket support), OpenSSL 3 (libcrypto), zlib, liblzma, libzstd.
-[CPM](https://github.com/cpm-cmake/CPM.cmake) fetches nlohmann_json.
+Requirements: CMake ≥ 3.24 and a C++20 compiler (GCC, Clang/Apple Clang or MSVC). Linux, macOS and Windows are supported.
+
+Everything else is fetched by [CPM](https://github.com/cpm-cmake/CPM.cmake) at configure time, pinned and hash-checked,
+and linked statically: curl (HTTP/1.1, WebSockets), mbedTLS 3.6, zlib, zstd, liblzma and nlohmann_json. No system
+libraries beyond the C/C++ runtime are used. Set `CPM_SOURCE_CACHE` to reuse the downloads between build directories.
+
+TLS trusts only the Mozilla CA bundle published by curl (`cacert-<date>.pem`, pinned in `CMakeLists.txt`),
+which is compiled into the library; the operating system's certificate store is not consulted.
 
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -74,12 +80,13 @@ The CLI executable is built as `build/pxsteamdl`.
 
 ## Python
 
+Prebuilt wheels (CPython 3.10–3.14 on Linux x86_64 (manylinux_2_28), macOS arm64 (11.0+) and Windows x64) are attached
+to the [GitHub Releases](https://github.com/PyXiion/PxSteamDL/releases); install one with
+`pip install <wheel URL or file>`. Alternatively, build from source (needs CMake and a C++20 compiler):
+
 ```sh
 pip install git+https://github.com/PyXiion/PxSteamDL   # or, from a checkout: pip install .
 ```
-
-This builds the extension from source, so it needs the same system dependencies as the C++ build plus a C++20 compiler and CMake.
-Wheels are not published: PxSteamDL needs libcurl ≥ 8.11 with WebSocket support, which the manylinux baseline does not provide.
 
 ```py
 import pxsteamdl
@@ -128,7 +135,10 @@ asyncio.run(main())
 - Updates are incremental: a file whose size and SHA-1 already match the manifest is not downloaded again. Files and directories that are not in the manifest are deleted, as steamcmd does.
 - Files are assembled under a temporary name and renamed into place after the SHA-1 check, so an interrupted run never leaves a truncated file under its real name.
 - Every chunk is checked (Adler-32 and size) after it is decrypted and decompressed.
-- Manifest paths are untrusted: absolute paths and `..` components are rejected.
+- Manifest paths are untrusted: absolute paths and `..` components are rejected. On Windows, names Windows cannot
+  represent faithfully (containing `:` or other reserved characters, device names such as `CON`, trailing dots or spaces) fail the item.
+- Symlinks from the manifest are recreated as symlinks. Windows allows creating them only with Developer Mode enabled
+  or with administrator rights; otherwise an item that contains symlinks fails with an error saying so.
 - A failed item is reported in `Result::error` and does not stop the other items in the batch.
 
 ## License

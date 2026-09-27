@@ -8,13 +8,41 @@
 #include <mutex>
 #include <string>
 
+#ifdef _WIN32
+#include <mbedtls/threading.h>
+#include <windows.h>
+#endif
+
 namespace pxsteamdl::detail {
 
+// Generated from the pinned Mozilla CA bundle by CMakeLists.txt; NUL-terminated so mbedTLS parses it in place.
+extern const unsigned char ca_bundle[];
+extern const std::size_t ca_bundle_size;
+
 namespace {
+
+#ifdef _WIN32
+// MBEDTLS_THREADING_ALT mutexes (cmake/mbedtls): an SRWLOCK is one zero-initialized pointer and needs no cleanup.
+PSRWLOCK srw(mbedtls_threading_mutex_t* mutex) { return reinterpret_cast<PSRWLOCK>(&mutex->lock); }
+void mutex_init(mbedtls_threading_mutex_t* mutex) { InitializeSRWLock(srw(mutex)); }
+void mutex_free(mbedtls_threading_mutex_t*) {}
+int mutex_lock(mbedtls_threading_mutex_t* mutex) {
+    AcquireSRWLockExclusive(srw(mutex));
+    return 0;
+}
+int mutex_unlock(mbedtls_threading_mutex_t* mutex) {
+    ReleaseSRWLockExclusive(srw(mutex));
+    return 0;
+}
+#endif
 
 void init_curl() {
     static std::once_flag once;
     std::call_once(once, [] {
+#ifdef _WIN32
+        // Must precede every other mbedTLS call; curl_global_init starts PSA crypto.
+        mbedtls_threading_set_alt(mutex_init, mutex_free, mutex_lock, mutex_unlock);
+#endif
         if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK)
             throw std::runtime_error("curl_global_init failed");
     });
@@ -38,6 +66,11 @@ std::uint64_t parse_u64(const nlohmann::json& v) {
 
 } // namespace
 
+void set_ca_bundle(CURL* curl) {
+    curl_blob blob{const_cast<unsigned char*>(ca_bundle), ca_bundle_size, CURL_BLOB_NOCOPY};
+    curl_easy_setopt(curl, CURLOPT_CAINFO_BLOB, &blob);
+}
+
 HttpResponse http_request(std::string_view url, std::string_view method, std::string_view body,
                           std::string_view content_type) {
     init_curl();
@@ -58,6 +91,7 @@ HttpResponse http_request(std::string_view url, std::string_view method, std::st
     char error[CURL_ERROR_SIZE] = {};
     curl_easy_setopt(curl, CURLOPT_URL, url_str.c_str());
     curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, error);
+    set_ca_bundle(curl);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
