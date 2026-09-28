@@ -54,6 +54,12 @@ Bytes encode_string(std::uint32_t field, std::string_view value) {
     return encode_bytes(field, {reinterpret_cast<const std::uint8_t*>(value.data()), value.size()});
 }
 
+Bytes concat(std::initializer_list<std::span<const std::uint8_t>> parts) {
+    Bytes out;
+    for (auto part : parts) out.insert(out.end(), part.begin(), part.end());
+    return out;
+}
+
 bool Reader::next(Field& field) {
     if (offset_ >= input_.size()) return false;
     auto varint = [&] {

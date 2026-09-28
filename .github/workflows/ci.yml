@@ -1,8 +1,17 @@
 name: CI
 
+# Pull requests are checked by the pull_request event; push covers main only, so a PR commit runs once and tags
+# (built by the Release workflow) do not rerun CI.
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
+
+# A new push to a PR supersedes its running check; every commit on main keeps its own run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:

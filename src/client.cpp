@@ -21,16 +21,10 @@ std::vector<Result> Client::download(std::span<const std::uint64_t> item_ids,
 
     for (std::size_t i = 0; i < items.size(); ++i) {
         const detail::Item& item = items[i];
-        Result& result = results[i];
-        result = {item.id, item.title, root / std::to_string(item.id), item.error};
-        if (!result.error.empty()) continue;
-        try {
-            std::filesystem::create_directories(result.path);
-        } catch (const std::exception& e) {
-            result.error = e.what();
-            continue;
-        }
-        detail::ItemJob& job = jobs.emplace_back(detail::ItemJob{&item, result.path, {}, {}});
+        results[i] = {item.id, item.title, root / std::to_string(item.id), item.error};
+        if (!item.error.empty()) continue;
+        // The downloader creates the directory, after refusing a symlink in its place.
+        detail::ItemJob& job = jobs.emplace_back(detail::ItemJob{&item, results[i].path, {}, {}});
         if (options.on_progress) {
             job.progress = [&options, id = item.id](std::uint64_t done, std::uint64_t total) {
                 options.on_progress({id, done, total});

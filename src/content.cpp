@@ -49,6 +49,14 @@ struct Chunk {
     std::uint32_t compressed = 0;
 };
 
+// EDepotFileFlag bits used here.
+namespace file_flag {
+constexpr std::uint32_t executable = 0x20;
+constexpr std::uint32_t directory = 0x40;
+constexpr std::uint32_t custom_executable = 0x80;
+constexpr std::uint32_t symlink = 0x200;
+} // namespace file_flag
+
 struct File {
     std::string name;
     std::string link_target;
@@ -56,6 +64,11 @@ struct File {
     std::uint32_t flags = 0;
     Hash sha{};
     std::vector<Chunk> chunks;
+
+    bool is_directory() const { return flags & file_flag::directory; }
+    bool is_symlink() const { return flags & file_flag::symlink; }
+    bool is_regular() const { return !is_directory() && !is_symlink(); }
+    bool is_executable() const { return flags & (file_flag::executable | file_flag::custom_executable); }
 };
 
 [[noreturn]] void fail(const std::string& message) {
@@ -205,6 +218,17 @@ bool windows_unsafe([[maybe_unused]] std::string_view part) {
 #endif
 }
 
+// Key under which a manifest path is compared with others and with what is on disk. Windows and macOS file
+// systems are case-insensitive by default, so "Textures/a.png" and "textures/a.png" name the same file there;
+// ASCII folding covers the paths mods use in practice.
+std::string path_key(std::string path) {
+#if defined(_WIN32) || defined(__APPLE__)
+    std::transform(path.begin(), path.end(), path.begin(),
+                   [](char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; });
+#endif
+    return path;
+}
+
 void normalize_path(std::string& path) {
     std::replace(path.begin(), path.end(), '\\', '/');
     if (path.empty() || path.front() == '/' || path.back() == '/' ||
@@ -266,7 +290,7 @@ File parse_file(std::span<const std::uint8_t> bytes) {
         else if (field.number == 7 && field.wire == 2)
             file.link_target.assign(reinterpret_cast<const char*>(field.bytes.data()), field.bytes.size());
     }
-    if (!(file.flags & (0x40 | 0x200)) && !has_hash) fail("manifest: file missing SHA-1");
+    if (file.is_regular() && !has_hash) fail("manifest: file missing SHA-1");
     return file;
 }
 
@@ -317,10 +341,10 @@ std::vector<File> parse_manifest(std::span<const std::uint8_t> zip, const Key& k
             if (!file.link_target.empty()) file.link_target = decrypt_name(file.link_target, key);
         }
         normalize_path(file.name);
-        if (file.flags & 0x200) {
+        if (file.is_symlink()) {
             normalize_path(file.link_target);
             if (!file.chunks.empty()) fail("manifest: symlink contains chunks");
-        } else if (file.flags & 0x40) {
+        } else if (file.is_directory()) {
             if (!file.chunks.empty()) fail("manifest: directory contains chunks");
         } else {
             if (file.size > static_cast<std::uint64_t>(INT64_MAX)) fail("manifest: file too large");
@@ -400,6 +424,12 @@ public:
                               FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
         return handle_ != INVALID_HANDLE_VALUE;
     }
+    // Existing file for writing, same symlink protection.
+    bool open_write(const fs::path& path) {
+        handle_ = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                              FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        return handle_ != INVALID_HANDLE_VALUE;
+    }
     // New file; fails (already_exists()) if the path exists.
     bool create(const fs::path& path) {
         handle_ = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
@@ -430,6 +460,7 @@ public:
         if (ReadFile(handle_, buffer.data(), length, &read, &position)) return read;
         return GetLastError() == ERROR_HANDLE_EOF ? 0 : -1;
     }
+    bool is_open() const { return handle_ != INVALID_HANDLE_VALUE; }
     void close() {
         if (handle_ != INVALID_HANDLE_VALUE) CloseHandle(handle_);
         handle_ = INVALID_HANDLE_VALUE;
@@ -449,6 +480,10 @@ private:
 #else
     bool open_read(const fs::path& path) {
         fd_ = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+        return fd_ >= 0;
+    }
+    bool open_write(const fs::path& path) {
+        fd_ = ::open(path.c_str(), O_WRONLY | O_NOFOLLOW | O_CLOEXEC);
         return fd_ >= 0;
     }
     bool create(const fs::path& path) {
@@ -472,6 +507,7 @@ private:
             if (n >= 0 || errno != EINTR) return n;
         }
     }
+    bool is_open() const { return fd_ >= 0; }
     void close() {
         if (fd_ >= 0) ::close(fd_);
         fd_ = -1;
@@ -508,73 +544,101 @@ bool content_matches(const NativeFile& contents, const File& file) {
     return file.size == 0 || sha_file(contents, file.size) == file.sha;
 }
 
-bool up_to_date(const fs::path& path, const File& file) {
-    if (!fs::is_regular_file(fs::symlink_status(path))) return false;
-    if (fs::file_size(path) != file.size) return false;
-    NativeFile existing;
-    if (!existing.open_read(path)) {
+bool content_matches(const fs::path& path, const File& file) {
+    NativeFile contents;
+    if (!contents.open_read(path)) {
         auto reason = NativeFile::last_error();
         fail("cannot open file for SHA-1 verification: " + utf8(path) + ": " + reason);
     }
-    return content_matches(existing, file);
+    return content_matches(contents, file);
+}
+
+bool up_to_date(const fs::path& path, const File& file) {
+    auto status = fs::symlink_status(path);
+    return fs::is_regular_file(status) && fs::file_size(path) == file.size && content_matches(path, file);
 }
 
 constexpr auto regular_perms = fs::perms::owner_read | fs::perms::owner_write | fs::perms::group_read |
                                fs::perms::others_read;
 constexpr auto exec_perms = fs::perms::owner_exec | fs::perms::group_exec | fs::perms::others_exec;
 
-// A file being assembled in a temporary sibling of its final path.
-struct Pending {
-    const File* file;
-    fs::path final;
-    fs::path temp;
-    NativeFile out;
+// A file being assembled in a temporary sibling of its final path. The temporary file is open only while chunks of
+// it are being written, so an item with thousands of changed files does not exhaust the descriptor limit.
+class Pending {
+public:
+    const File& file;
 
-    Pending(const File& source, fs::path destination) : file(&source), final(std::move(destination)) {
+    Pending(const File& source, fs::path destination, std::size_t writes)
+        : file(source), final_(std::move(destination)), unwritten_(writes) {
         thread_local std::mt19937_64 random(std::random_device{}());
+        NativeFile out;
         for (;;) {
-            temp = final;
-            temp += ".pxsteamdl." + std::to_string(random());
-            if (out.create(temp)) break;
+            temp_ = final_;
+            temp_ += ".pxsteamdl." + std::to_string(random());
+            if (out.create(temp_)) break;
             if (!NativeFile::already_exists()) {
                 auto reason = NativeFile::last_error();
-                fail("cannot create temporary file for " + utf8(final) + ": " + reason);
+                temp_.clear();
+                fail("cannot create temporary file for " + utf8(final_) + ": " + reason);
             }
         }
         if (!out.resize(source.size)) {
             auto reason = NativeFile::last_error();
             discard();
-            fail("cannot size temporary file for " + utf8(final) + ": " + reason);
+            fail("cannot size temporary file for " + utf8(final_) + ": " + reason);
         }
     }
     ~Pending() { discard(); }
     Pending(const Pending&) = delete;
     Pending& operator=(const Pending&) = delete;
 
-    // Moves the finished temporary file over the final path.
+    // One of the writes announced to the constructor; safe to call concurrently for disjoint ranges.
+    // The file is opened by the first write and closed after the last one, whether or not it succeeded.
+    void write(std::uint64_t offset, std::span<const std::uint8_t> data) {
+        struct Done {
+            Pending& pending;
+            ~Done() {
+                std::lock_guard lock(pending.mutex_);
+                if (--pending.unwritten_ == 0) pending.out_.close();
+            }
+        } done{*this};
+        {
+            std::lock_guard lock(mutex_);
+            if (!out_.is_open() && !out_.open_write(temp_)) {
+                auto reason = NativeFile::last_error();
+                fail("cannot open temporary file for " + utf8(final_) + ": " + reason);
+            }
+        }
+        // The handle stays open until this write is counted done.
+        if (!out_.write_at(offset, data)) {
+            auto reason = NativeFile::last_error();
+            fail("write failed: " + utf8(final_) + ": " + reason);
+        }
+    }
+
+    // Verifies the whole-file hash, then moves the temporary file over the final path. Call after all writes.
     void commit(fs::perms perms) {
-        out.close();
-        fs::permissions(temp, perms);
-        if (fs::is_directory(fs::symlink_status(final))) fs::remove_all(final);
-        fs::rename(temp, final);
-        temp.clear();
+        if (!content_matches(temp_, file)) fail("file SHA-1 mismatch: " + file.name);
+        fs::permissions(temp_, perms);
+        if (fs::is_directory(fs::symlink_status(final_))) fs::remove_all(final_);
+        fs::rename(temp_, final_);
+        temp_.clear();
     }
 
 private:
+    fs::path final_;
+    fs::path temp_;
+    std::mutex mutex_; // guards out_ opening and closing, and unwritten_
+    NativeFile out_;
+    std::size_t unwritten_;
+
     void discard() {
-        out.close();
+        out_.close();
         std::error_code ignored;
-        if (!temp.empty()) fs::remove(temp, ignored);
-        temp.clear();
+        if (!temp_.empty()) fs::remove(temp_, ignored);
+        temp_.clear();
     }
 };
-
-void write_chunk(const NativeFile& out, const Chunk& chunk, const Bytes& bytes) {
-    if (!out.write_at(chunk.offset, bytes)) {
-        auto reason = NativeFile::last_error();
-        fail("chunk: write failed: " + reason);
-    }
-}
 
 std::vector<std::string> cdn_servers(std::uint32_t app_id) {
     auto response = http_request("https://api.steampowered.com/IContentServerDirectoryService/GetServersForSteamPipe/v1/?cell_id=0&max_servers=20");
@@ -608,20 +672,25 @@ std::vector<std::string> cdn_servers(std::uint32_t app_id) {
     }
 }
 
-Bytes get_from_cdn(const std::vector<std::string>& hosts, std::string_view path, std::size_t start) {
+// Tries the hosts in turn, starting at host and leaving it at the one that answered. decode throws to reject a bad
+// response, which moves on to the next host like an HTTP error does.
+template <class Decode>
+auto fetch_from_cdn(const std::vector<std::string>& hosts, const std::string& path, std::size_t& host,
+                    const std::stop_token& stop, Decode decode) {
     std::string last_error;
     std::size_t attempts = std::min<std::size_t>(hosts.size() * 2, 6);
-    for (std::size_t i = 0; i < attempts; ++i) {
-        const auto& host = hosts[(start + i) % hosts.size()];
+    for (std::size_t attempt = 0; attempt < attempts; ++attempt, ++host) {
+        if (stop.stop_requested()) fail("cancelled");
+        const auto& name = hosts[host % hosts.size()];
         try {
-            auto response = http_request("https://" + host + std::string(path));
-            if (response.status == 200) return std::move(response.body);
-            last_error = host + ": HTTP " + std::to_string(response.status);
+            auto response = http_request("https://" + name + path);
+            if (response.status == 200) return decode(std::move(response.body));
+            last_error = name + ": HTTP " + std::to_string(response.status);
         } catch (const std::exception& e) {
-            last_error = host + ": " + e.what();
+            last_error = name + ": " + e.what();
         }
     }
-    fail("CDN request failed for " + std::string(path) + ": " + last_error);
+    fail("CDN request failed for " + path + ": " + last_error);
 }
 
 void ensure_directory(const fs::path& path) {
@@ -635,8 +704,7 @@ void prune(const fs::path& root, const fs::path& dir, const std::set<std::string
     std::vector<fs::path> children;
     for (const auto& entry : fs::directory_iterator(dir)) children.push_back(entry.path());
     for (const auto& child : children) {
-        auto relative = utf8(child.lexically_relative(root));
-        if (!expected.contains(relative)) fs::remove_all(child);
+        if (!expected.contains(path_key(utf8(child.lexically_relative(root))))) fs::remove_all(child);
         else if (fs::is_directory(fs::symlink_status(child))) prune(root, child, expected);
     }
 }
@@ -649,21 +717,16 @@ struct ItemState {
     const std::vector<std::string>* hosts = nullptr;
     std::string chunk_prefix;
     std::vector<File> files;
-    std::set<std::string> expected;
+    std::set<std::string> expected; // path_key of every path the item consists of
     std::vector<std::unique_ptr<Pending>> pending;
     std::vector<std::pair<Pending*, const Chunk*>> chunks;
+    std::size_t next_chunk = 0; // next to hand out; guarded by Downloader::queue_mutex_
     std::atomic<std::size_t> remaining{0};
     std::atomic<bool> failed{false};
     std::mutex mutex; // guards done, error and progress calls
     std::uint64_t done = 0;
     std::uint64_t total = 0;
     std::string error;
-};
-
-struct Task {
-    ItemState* state;
-    Pending* output;
-    const Chunk* chunk;
 };
 
 // One download() call: planners resolve items into chunk tasks, a shared worker pool fetches chunks of all
@@ -698,17 +761,18 @@ private:
     std::mutex queue_mutex_;
     std::condition_variable queue_ready_;
     std::condition_variable item_slot_free_;
-    std::deque<Task> queue_;
+    // Items with chunks left to hand out. Workers rotate over the first planners_ of them, so parallel_items items
+    // download side by side and the next one starts as soon as one of them has no chunks left, instead of queueing
+    // behind every chunk of the others.
+    std::deque<ItemState*> ready_;
     std::size_t active_planners_ = 0;
     std::size_t open_items_ = 0; // planned but not finished; bounds open temporary files
 
     Key depot_key(std::uint32_t depot, std::uint32_t app_id) {
         std::lock_guard lock(cache_mutex_);
         if (auto it = keys_.find(depot); it != keys_.end()) return it->second;
-        Bytes request = encode_uint(1, depot);
-        auto app_field = encode_uint(2, app_id);
-        request.insert(request.end(), app_field.begin(), app_field.end());
-        Bytes reply = session_.request(5438, request);
+        Bytes reply = session_.request(emsg::client_get_depot_decryption_key,
+                                       concat({encode_uint(1, depot), encode_uint(2, app_id)}));
         Key key{};
         std::uint64_t eresult = 0;
         bool has_key = false;
@@ -778,12 +842,9 @@ private:
         state.root = root;
         state.key = depot_key(depot, item.app_id);
 
-        Bytes code_request = encode_uint(1, item.app_id);
-        auto depot_field = encode_uint(2, depot);
-        auto gid_field = encode_uint(3, item.manifest_id);
-        code_request.insert(code_request.end(), depot_field.begin(), depot_field.end());
-        code_request.insert(code_request.end(), gid_field.begin(), gid_field.end());
-        auto code_reply = session_.rpc("ContentServerDirectory.GetManifestRequestCode#1", code_request);
+        auto code_reply = session_.rpc(
+            "ContentServerDirectory.GetManifestRequestCode#1",
+            concat({encode_uint(1, item.app_id), encode_uint(2, depot), encode_uint(3, item.manifest_id)}));
         std::uint64_t code = 0;
         Reader code_reader(code_reply);
         Field field;
@@ -793,23 +854,30 @@ private:
         state.hosts = &cdn_hosts(item.app_id);
         std::string manifest_path = "/depot/" + std::to_string(depot) + "/manifest/" +
                                     std::to_string(item.manifest_id) + "/5/" + std::to_string(code);
-        Bytes manifest_zip = get_from_cdn(*state.hosts, manifest_path, planner);
-        state.files = parse_manifest(manifest_zip, state.key, depot, item.manifest_id);
+        std::size_t host = planner;
+        state.files = fetch_from_cdn(*state.hosts, manifest_path, host, stop_, [&](const Bytes& zip) {
+            return parse_manifest(zip, state.key, depot, item.manifest_id);
+        });
         state.chunk_prefix = "/depot/" + std::to_string(depot) + "/chunk/";
 
-        std::set<std::string> declared;
-        std::set<std::string> dirs;
+        std::set<std::string> declared; // path keys of the manifest entries
+        std::set<std::string> dirs;     // directories to create
+        std::set<std::string> dir_keys;
+        auto add_directory = [&](const std::string& name) {
+            dirs.insert(name);
+            dir_keys.insert(path_key(name));
+            state.expected.insert(path_key(name));
+        };
         for (const auto& file : state.files) {
-            if (!declared.insert(file.name).second) fail("manifest: duplicate path: " + file.name);
-            state.expected.insert(file.name);
-            if (file.flags & 0x40) dirs.insert(file.name);
-            for (auto parent = utf8_path(file.name).parent_path(); !parent.empty(); parent = parent.parent_path()) {
-                state.expected.insert(utf8(parent));
-                dirs.insert(utf8(parent));
-            }
+            if (!declared.insert(path_key(file.name)).second) fail("manifest: duplicate path: " + file.name);
+            state.expected.insert(path_key(file.name));
+            if (file.is_directory()) add_directory(file.name);
+            for (auto parent = utf8_path(file.name).parent_path(); !parent.empty(); parent = parent.parent_path())
+                add_directory(utf8(parent));
         }
         for (const auto& file : state.files)
-            if (dirs.contains(file.name) && !(file.flags & 0x40)) fail("manifest: file/directory path conflict: " + file.name);
+            if (!file.is_directory() && dir_keys.contains(path_key(file.name)))
+                fail("manifest: file/directory path conflict: " + file.name);
 
         if (fs::is_symlink(fs::symlink_status(root))) fail("destination must not be a symlink");
         fs::create_directories(root);
@@ -822,15 +890,13 @@ private:
         for (const auto& dir : sorted_dirs) ensure_directory(root / utf8_path(dir));
 
         for (const auto& file : state.files) {
-            if (file.flags & (0x40 | 0x200)) continue;
+            if (!file.is_regular()) continue;
             auto path = root / utf8_path(file.name);
             if (up_to_date(path, file)) {
-                if (file.flags & (0x20 | 0x80))
-                    fs::permissions(path, fs::perms::owner_exec | fs::perms::group_exec | fs::perms::others_exec,
-                                    fs::perm_options::add);
+                if (file.is_executable()) fs::permissions(path, exec_perms, fs::perm_options::add);
                 continue;
             }
-            state.pending.push_back(std::make_unique<Pending>(file, path));
+            state.pending.push_back(std::make_unique<Pending>(file, path, file.chunks.size()));
             auto* output = state.pending.back().get();
             for (const auto& chunk : file.chunks) {
                 state.chunks.emplace_back(output, &chunk);
@@ -846,7 +912,7 @@ private:
         if (stop_.stop_requested()) fail("cancelled");
         state.remaining = state.chunks.size();
         std::lock_guard lock(queue_mutex_);
-        for (auto [output, chunk] : state.chunks) queue_.push_back({&state, output, chunk});
+        ready_.push_back(&state);
         queue_ready_.notify_all();
         return true;
     }
@@ -854,20 +920,26 @@ private:
     void work(std::size_t worker) {
         std::size_t host = worker; // each worker sticks to one CDN host and moves on only after a failure
         for (;;) {
-            Task task;
+            ItemState* item;
+            std::pair<Pending*, const Chunk*> task;
             {
                 std::unique_lock lock(queue_mutex_);
-                queue_ready_.wait(lock, [&] { return !queue_.empty() || active_planners_ == 0; });
-                if (queue_.empty()) return;
-                task = queue_.front();
-                queue_.pop_front();
+                queue_ready_.wait(lock, [&] { return !ready_.empty() || active_planners_ == 0; });
+                if (ready_.empty()) return;
+                item = ready_.front();
+                ready_.pop_front();
+                task = item->chunks[item->next_chunk++];
+                // Back into the rotation window; the state lives until its last handed-out chunk completes.
+                if (item->next_chunk < item->chunks.size())
+                    ready_.insert(ready_.begin() + std::min(planners_ - 1, ready_.size()), item);
             }
-            ItemState& state = *task.state;
+            ItemState& state = *item;
+            auto [output, chunk] = task;
             if (!state.failed) {
                 try {
-                    fetch_chunk(state, *task.output, *task.chunk, host);
+                    fetch_chunk(state, *output, *chunk, host);
                     std::lock_guard lock(state.mutex);
-                    state.done += task.chunk->original;
+                    state.done += chunk->original;
                     if (state.job->progress) state.job->progress(state.done, state.total);
                 } catch (const std::exception& e) {
                     std::lock_guard lock(state.mutex);
@@ -882,27 +954,10 @@ private:
         }
     }
 
-    void fetch_chunk(const ItemState& state, const Pending& output, const Chunk& chunk, std::size_t& host) const {
-        const auto& hosts = *state.hosts;
-        auto path = state.chunk_prefix + hex_hash(chunk.sha);
-        std::string last_error;
-        std::size_t attempts = std::min<std::size_t>(hosts.size() * 2, 6);
-        for (std::size_t attempt = 0; attempt < attempts; ++attempt, ++host) {
-            if (stop_.stop_requested()) fail("cancelled");
-            const auto& name = hosts[host % hosts.size()];
-            try {
-                auto response = http_request("https://" + name + path);
-                if (response.status != 200) {
-                    last_error = name + ": HTTP " + std::to_string(response.status);
-                    continue;
-                }
-                write_chunk(output.out, chunk, expand_chunk(response.body, state.key, chunk));
-                return;
-            } catch (const std::exception& e) {
-                last_error = name + ": " + e.what();
-            }
-        }
-        fail("chunk " + hex_hash(chunk.sha) + " failed: " + last_error);
+    void fetch_chunk(const ItemState& state, Pending& output, const Chunk& chunk, std::size_t& host) const {
+        Bytes data = fetch_from_cdn(*state.hosts, state.chunk_prefix + hex_hash(chunk.sha), host, stop_,
+                                    [&](const Bytes& body) { return expand_chunk(body, state.key, chunk); });
+        output.write(chunk.offset, data); // a local write error is not worth retrying on another host
     }
 
     // Runs on the thread that completed the item's last chunk (or its planner when nothing was needed).
@@ -921,11 +976,10 @@ private:
 
     static void finalize(ItemState& state) {
         for (auto& output : state.pending) {
-            if (!content_matches(output->out, *output->file)) fail("file SHA-1 mismatch: " + output->file->name);
-            output->commit((output->file->flags & (0x20 | 0x80)) ? regular_perms | exec_perms : regular_perms);
+            output->commit(output->file.is_executable() ? regular_perms | exec_perms : regular_perms);
         }
         for (const auto& file : state.files) {
-            if (!(file.flags & 0x200)) continue;
+            if (!file.is_symlink()) continue;
             auto path = state.root / utf8_path(file.name);
             auto target = utf8_path(file.link_target).make_preferred();
             if (fs::is_symlink(fs::symlink_status(path)) && fs::read_symlink(path) == target) continue;
@@ -957,12 +1011,12 @@ private:
         auto response = http_request(item.file_url);
         if (response.status != 200) fail("legacy file: HTTP " + std::to_string(response.status));
         File legacy;
+        legacy.name = utf8(name);
         legacy.size = response.body.size();
-        Pending output(legacy, root / name);
-        if (!output.out.write_at(0, response.body)) {
-            auto reason = NativeFile::last_error();
-            fail("legacy file write failed: " + reason);
-        }
+        // commit() verifies what reached the disk against this.
+        if (mbedtls_sha1(response.body.data(), response.body.size(), legacy.sha.data()) != 0) fail("SHA-1 failed");
+        Pending output(legacy, root / name, 1);
+        output.write(0, response.body);
         output.commit(regular_perms);
         if (job.progress) job.progress(legacy.size, legacy.size);
     }
