@@ -3,6 +3,8 @@
 A small C++20 library and CLI that replaces `steamcmd +login anonymous +workshop_download_item 294100 <id>`.
 It logs in to Steam anonymously and downloads RimWorld Workshop items in parallel.
 
+> **Notice:** This project is made for [PyXiion/PxModRim](https://github.com/PyXiion/PxModRim).
+
 **Disclaimer:** PxSteamDL is not affiliated with or endorsed by Valve. It only downloads content that Steam serves to anonymous accounts.
 
 It talks to Steam directly:
