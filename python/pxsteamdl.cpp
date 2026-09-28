@@ -83,8 +83,8 @@ NB_MODULE(_pxsteamdl, m) {
                                   "Anonymous Steam session. Thread-safe: one client may serve several threads.")
         .def(nb::init<>(), nb::call_guard<nb::gil_scoped_release>(),
              "Logs in to Steam anonymously; raises RuntimeError on failure.")
-        .def("download", &download, "ids"_a, "root"_a, nb::kw_only(), "parallel_items"_a = 4,
-             "threads_per_item"_a = 8, "on_progress"_a = nb::none(), "cancel"_a.none() = nb::none(),
+        .def("download", &download, "ids"_a, "root"_a, nb::kw_only(), "parallel_items"_a = 2,
+             "threads_per_item"_a = 4, "on_progress"_a = nb::none(), "cancel"_a.none() = nb::none(),
              "Downloads each item into root/<item id>/, updating existing copies incrementally.\n\n"
              "Per-item failures are reported in Result.error. on_progress is called from worker\n"
              "threads; exceptions it raises are reported as unraisable and do not stop the download.\n"

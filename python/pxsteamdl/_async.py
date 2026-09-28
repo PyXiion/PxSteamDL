@@ -31,8 +31,8 @@ class AsyncClient:
         ids: Sequence[int],
         root: str | os.PathLike[str],
         *,
-        parallel_items: int = 4,
-        threads_per_item: int = 8,
+        parallel_items: int = 2,
+        threads_per_item: int = 4,
         on_progress: Callable[[Progress], object] | None = None,
     ) -> list[Result]:
         """Downloads each item into root/<item id>/, like Client.download.

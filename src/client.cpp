@@ -30,7 +30,7 @@ std::vector<Result> Client::download(std::span<const std::uint64_t> item_ids,
             result.error = e.what();
             continue;
         }
-        detail::ItemJob& job = jobs.emplace_back(detail::ItemJob{&item, result.path.string(), {}, {}});
+        detail::ItemJob& job = jobs.emplace_back(detail::ItemJob{&item, result.path, {}, {}});
         if (options.on_progress) {
             job.progress = [&options, id = item.id](std::uint64_t done, std::uint64_t total) {
                 options.on_progress({id, done, total});

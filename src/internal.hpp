@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <span>
 #include <stdexcept>
@@ -21,6 +22,10 @@ struct HttpResponse {
 
 HttpResponse http_request(std::string_view url, std::string_view method = "GET",
                           std::string_view body = {}, std::string_view content_type = {});
+
+// Makes a curl easy handle (CURL*) trust the Mozilla CA bundle compiled into the library; mbedTLS has no access
+// to the OS trust store. Must be set again after curl_easy_reset().
+void set_ca_bundle(void* curl);
 
 struct Item {
     std::uint64_t id = 0;
@@ -52,7 +57,7 @@ private:
 
 struct ItemJob {
     const Item* item;
-    std::string destination;
+    std::filesystem::path destination;
     std::function<void(std::uint64_t, std::uint64_t)> progress;
     std::string error; // set when the item fails
 };

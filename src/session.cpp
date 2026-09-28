@@ -4,7 +4,6 @@
 #include <curl/curl.h>
 #include <curl/websockets.h>
 #include <nlohmann/json.hpp>
-#include <poll.h>
 #include <zlib.h>
 
 #include <atomic>
@@ -19,9 +18,26 @@
 #include <unordered_map>
 #include <vector>
 
+#ifdef _WIN32
+#include <winsock2.h>
+#else
+#include <poll.h>
+#endif
+
 namespace pxsteamdl::detail {
 
 namespace {
+
+// Waits up to timeout_ms for the socket to become readable (or writable); returns false on timeout or error.
+bool wait_socket(curl_socket_t socket, bool write, int timeout_ms) {
+#ifdef _WIN32
+    WSAPOLLFD entry{socket, static_cast<SHORT>(write ? POLLOUT : POLLIN), 0};
+    return WSAPoll(&entry, 1, timeout_ms) > 0;
+#else
+    pollfd entry{socket, static_cast<short>(write ? POLLOUT : POLLIN), 0};
+    return poll(&entry, 1, timeout_ms) > 0;
+#endif
+}
 
 Bytes decompress_gzip(std::span<const std::uint8_t> data, std::size_t uncompressed_hint) {
     Bytes out(uncompressed_hint ? uncompressed_hint : data.size() * 4);
@@ -213,12 +229,7 @@ struct Session::Impl {
             CURLcode rc = curl_ws_send(curl, data.data() + offset, data.size() - offset, &sent, 0, CURLWS_BINARY);
             if (rc == CURLE_AGAIN) {
                 if (sock == CURL_SOCKET_BAD) throw std::runtime_error("curl socket unavailable for send");
-                struct pollfd pfd;
-                pfd.fd = sock;
-                pfd.events = POLLOUT;
-                pfd.revents = 0;
-                int pr = poll(&pfd, 1, 5000);
-                if (pr <= 0) throw std::runtime_error("curl_ws_send poll timeout");
+                if (!wait_socket(sock, true, 5000)) throw std::runtime_error("curl_ws_send poll timeout");
                 continue;
             }
             if (rc != CURLE_OK) throw std::runtime_error(std::string("curl_ws_send failed: ") + curl_easy_strerror(rc));
@@ -275,11 +286,7 @@ struct Session::Impl {
                     std::this_thread::sleep_for(std::chrono::milliseconds(10));
                     continue;
                 }
-                struct pollfd pfd;
-                pfd.fd = sock;
-                pfd.events = POLLIN;
-                pfd.revents = 0;
-                poll(&pfd, 1, 50); // 50ms poll without holding io_mutex
+                wait_socket(sock, false, 50); // without holding io_mutex
                 continue;
             }
 
@@ -387,6 +394,7 @@ void Session::connect() {
         CURL* c = curl_easy_init();
         if (!c) continue;
         curl_easy_setopt(c, CURLOPT_URL, url.c_str());
+        set_ca_bundle(c);
         curl_easy_setopt(c, CURLOPT_CONNECT_ONLY, 2L);
         curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 10L);
 
@@ -422,13 +430,9 @@ void Session::connect() {
                 const struct curl_ws_frame* meta = nullptr;
                 CURLcode rc = curl_ws_recv(c, buf, sizeof(buf), &nread, &meta);
                 if (rc == CURLE_AGAIN) {
-                    curl_socket_t sock;
+                    curl_socket_t sock = CURL_SOCKET_BAD;
                     curl_easy_getinfo(c, CURLINFO_ACTIVESOCKET, &sock);
-                    struct pollfd pfd;
-                    pfd.fd = sock;
-                    pfd.events = POLLIN;
-                    pfd.revents = 0;
-                    poll(&pfd, 1, 50);
+                    wait_socket(sock, false, 50);
                     continue;
                 }
                 if (rc != CURLE_OK) break;

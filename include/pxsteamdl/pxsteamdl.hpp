@@ -24,9 +24,9 @@ struct Progress {
 
 struct Options {
     // Items resolved (manifest fetched, files planned) concurrently.
-    unsigned parallel_items = 4;
+    unsigned parallel_items = 2;
     // Chunk downloads share one pool of parallel_items * threads_per_item workers across all items.
-    unsigned threads_per_item = 8;
+    unsigned threads_per_item = 4;
     // Called from worker threads.
     std::function<void(const Progress&)> on_progress;
     // Cancellation: once stop is requested, in-flight chunk requests finish, remaining work is skipped and every
