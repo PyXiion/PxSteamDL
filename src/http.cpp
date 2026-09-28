@@ -4,9 +4,11 @@
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 
 #ifdef _WIN32
 #include <mbedtls/threading.h>
@@ -62,6 +64,36 @@ std::uint64_t parse_u64(const nlohmann::json& v) {
         return std::stoull(s);
     }
     return 0;
+}
+
+std::string string_field(const nlohmann::json& entry, const char* key) {
+    auto it = entry.find(key);
+    return it != entry.end() && it->is_string() ? it->get<std::string>() : std::string();
+}
+
+std::uint64_t u64_field(const nlohmann::json& entry, const char* key) {
+    auto it = entry.find(key);
+    return it != entry.end() ? parse_u64(*it) : 0;
+}
+
+// One publishedfiledetails entry; a malformed entry fails only its own item.
+Item parse_item(std::uint64_t id, const nlohmann::json& entry) {
+    Item item;
+    item.id = id;
+    try {
+        if (auto result = u64_field(entry, "result"); result != 1) {
+            item.error = "Steam result " + std::to_string(result);
+            return item;
+        }
+        item.manifest_id = u64_field(entry, "hcontent_file");
+        item.app_id = static_cast<std::uint32_t>(u64_field(entry, "consumer_app_id"));
+        item.title = string_field(entry, "title");
+        item.file_url = string_field(entry, "file_url");
+        item.filename = string_field(entry, "filename");
+    } catch (const std::exception& e) {
+        item.error = std::string("invalid item details: ") + e.what();
+    }
+    return item;
 }
 
 } // namespace
@@ -131,39 +163,29 @@ std::vector<Item> fetch_items(std::span<const std::uint64_t> ids) {
         if (response.status != 200)
             throw std::runtime_error("GetPublishedFileDetails: HTTP " + std::to_string(response.status));
 
-        auto root = nlohmann::json::parse(std::string_view(reinterpret_cast<const char*>(response.body.data()),
-                                                           response.body.size()));
+        auto root = nlohmann::json::parse(response.body.begin(), response.body.end());
         const auto& details = root.at("response").at("publishedfiledetails");
         if (!details.is_array())
             throw std::runtime_error("GetPublishedFileDetails: response lacks publishedfiledetails array");
 
+        std::unordered_map<std::uint64_t, const nlohmann::json*> by_id;
+        for (const auto& entry : details) {
+            try {
+                if (entry.is_object() && entry.contains("publishedfileid"))
+                    by_id.emplace(parse_u64(entry["publishedfileid"]), &entry);
+            } catch (const std::exception&) {
+                // an unparsable ID matches no request
+            }
+        }
         for (std::uint64_t id : chunk) {
-            Item item;
-            item.id = id;
-            const nlohmann::json* found = nullptr;
-            for (const auto& entry : details) {
-                if (entry.contains("publishedfileid") && parse_u64(entry["publishedfileid"]) == id) {
-                    found = &entry;
-                    break;
-                }
-            }
-            if (!found) {
-                item.error = "not returned by Steam";
+            auto found = by_id.find(id);
+            if (found != by_id.end()) {
+                items.push_back(parse_item(id, *found->second));
             } else {
-                std::uint64_t result = found->contains("result") ? parse_u64((*found)["result"]) : 0;
-                if (result != 1) {
-                    item.error = "Steam result " + std::to_string(result);
-                } else {
-                    if (found->contains("hcontent_file"))
-                        item.manifest_id = parse_u64((*found)["hcontent_file"]);
-                    if (found->contains("consumer_app_id"))
-                        item.app_id = static_cast<std::uint32_t>(parse_u64((*found)["consumer_app_id"]));
-                    item.title = found->value("title", "");
-                    item.file_url = found->value("file_url", "");
-                    item.filename = found->value("filename", "");
-                }
+                Item& item = items.emplace_back();
+                item.id = id;
+                item.error = "not returned by Steam";
             }
-            items.push_back(std::move(item));
         }
     }
     return items;

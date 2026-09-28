@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <initializer_list>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <stop_token>
@@ -39,6 +41,18 @@ struct Item {
 
 std::vector<Item> fetch_items(std::span<const std::uint64_t> ids);
 
+// Steam CM message types (SteamKit2 EMsg).
+namespace emsg {
+inline constexpr std::uint32_t multi = 1;
+inline constexpr std::uint32_t service_method_call = 151;
+inline constexpr std::uint32_t client_heartbeat = 703;
+inline constexpr std::uint32_t client_log_off = 706;
+inline constexpr std::uint32_t client_logon_response = 751;
+inline constexpr std::uint32_t client_logged_off = 757;
+inline constexpr std::uint32_t client_get_depot_decryption_key = 5438;
+inline constexpr std::uint32_t client_logon = 5514;
+} // namespace emsg
+
 class Session {
 public:
     Session();
@@ -46,13 +60,15 @@ public:
     Session(const Session&) = delete;
     Session& operator=(const Session&) = delete;
 
+    // Logs in anonymously; a no-op while connected. rpc() and request() call it to recover from a dropped
+    // connection, so a long-lived session survives Steam closing the socket between downloads.
     void connect();
     Bytes rpc(std::string_view method, std::span<const std::uint8_t> body);
-    Bytes request(std::uint32_t emsg, std::span<const std::uint8_t> body);
+    Bytes request(std::uint32_t type, std::span<const std::uint8_t> body);
 
 private:
     struct Impl;
-    Impl* impl_;
+    std::unique_ptr<Impl> impl_;
 };
 
 struct ItemJob {
@@ -72,6 +88,7 @@ Bytes encode_fixed32(std::uint32_t field, std::uint32_t value);
 Bytes encode_fixed64(std::uint32_t field, std::uint64_t value);
 Bytes encode_bytes(std::uint32_t field, std::span<const std::uint8_t> value);
 Bytes encode_string(std::uint32_t field, std::string_view value);
+Bytes concat(std::initializer_list<std::span<const std::uint8_t>> parts);
 
 struct Field {
     std::uint32_t number;

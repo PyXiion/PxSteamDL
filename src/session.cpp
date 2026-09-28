@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 #include <zlib.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -39,8 +40,12 @@ bool wait_socket(curl_socket_t socket, bool write, int timeout_ms) {
 #endif
 }
 
+constexpr std::uint64_t no_job = ~0ULL;
+
 Bytes decompress_gzip(std::span<const std::uint8_t> data, std::size_t uncompressed_hint) {
-    Bytes out(uncompressed_hint ? uncompressed_hint : data.size() * 4);
+    // The hint comes from the network: cap the initial allocation, the buffer grows as needed.
+    constexpr std::size_t max_initial = 16 << 20;
+    Bytes out(std::clamp<std::size_t>(uncompressed_hint ? uncompressed_hint : data.size() * 4, 1024, max_initial));
     z_stream strm{};
     if (inflateInit2(&strm, 16 + MAX_WBITS) != Z_OK)
         throw std::runtime_error("inflateInit2 failed");
@@ -68,8 +73,8 @@ struct Packet {
     std::uint32_t emsg = 0;
     std::uint64_t steamid = 0;
     std::int32_t sessionid = 0;
-    std::uint64_t jobid_source = ~0ULL;
-    std::uint64_t jobid_target = ~0ULL;
+    std::uint64_t jobid_source = no_job;
+    std::uint64_t jobid_target = no_job;
     std::int32_t eresult = 0;
     std::string target_job_name;
     std::string error_message;
@@ -111,8 +116,8 @@ Bytes serialize_packet(std::uint32_t emsg, std::uint64_t steamid, std::int32_t s
     auto append = [&](Bytes b) { header.insert(header.end(), b.begin(), b.end()); };
     if (steamid) append(encode_fixed64(1, steamid));
     if (sessionid) append(encode_uint(2, static_cast<std::uint32_t>(sessionid)));
-    if (jobid_src != ~0ULL) append(encode_fixed64(10, jobid_src));
-    if (jobid_tgt != ~0ULL) append(encode_fixed64(11, jobid_tgt));
+    if (jobid_src != no_job) append(encode_fixed64(10, jobid_src));
+    if (jobid_tgt != no_job) append(encode_fixed64(11, jobid_tgt));
     if (!target_job_name.empty()) append(encode_string(12, target_job_name));
 
     Bytes out(8);
@@ -125,10 +130,13 @@ Bytes serialize_packet(std::uint32_t emsg, std::uint64_t steamid, std::int32_t s
     return out;
 }
 
-void unpack_packet(const Packet& pkt, std::vector<Packet>& out) {
-    if (pkt.emsg != 1) { // not Multi
-        out.push_back(pkt);
-        return;
+// Parses a CM message, expanding a Multi into the packets it carries.
+std::vector<Packet> parse_message(std::span<const std::uint8_t> message) {
+    Packet pkt = parse_proto_packet(message);
+    std::vector<Packet> out;
+    if (pkt.emsg != emsg::multi) {
+        out.push_back(std::move(pkt));
+        return out;
     }
     Reader r(pkt.body);
     Field f;
@@ -156,80 +164,204 @@ void unpack_packet(const Packet& pkt, std::vector<Packet>& out) {
         out.push_back(parse_proto_packet(data.subspan(offset, sub_len)));
         offset += sub_len;
     }
+    return out;
+}
+
+// again: nothing buffered, wait for the socket; more: read again right away.
+enum class Receive { message, more, again, closed };
+
+// One non-blocking read from a CONNECT_ONLY WebSocket. Data frames are reassembled in partial; a completed message
+// is moved into message. Control frames (curl answers pings itself) are skipped.
+Receive receive(CURL* curl, Bytes& partial, Bytes& message) {
+    std::uint8_t buffer[65536];
+    std::size_t read = 0;
+    const curl_ws_frame* meta = nullptr;
+    CURLcode rc = curl_ws_recv(curl, buffer, sizeof buffer, &read, &meta);
+    if (rc == CURLE_AGAIN) return Receive::again;
+    if (rc != CURLE_OK || !meta || (meta->flags & CURLWS_CLOSE)) return Receive::closed;
+    if (!(meta->flags & (CURLWS_BINARY | CURLWS_TEXT))) return Receive::more;
+    partial.insert(partial.end(), buffer, buffer + read);
+    if (meta->bytesleft != 0 || (meta->flags & CURLWS_CONT)) return Receive::more;
+    message = std::move(partial);
+    partial.clear();
+    return Receive::message;
+}
+
+curl_socket_t active_socket(CURL* curl) {
+    curl_socket_t socket = CURL_SOCKET_BAD;
+    curl_easy_getinfo(curl, CURLINFO_ACTIVESOCKET, &socket);
+    return socket;
+}
+
+std::vector<std::string> cm_endpoints() {
+    HttpResponse response = http_request("https://api.steampowered.com/ISteamDirectory/GetCMListForConnect/v1/?cellid=0");
+    if (response.status != 200)
+        throw std::runtime_error("GetCMListForConnect: HTTP " + std::to_string(response.status));
+    auto root = nlohmann::json::parse(response.body.begin(), response.body.end());
+    const auto& serverlist = root.at("response").at("serverlist");
+    if (!serverlist.is_array()) throw std::runtime_error("GetCMListForConnect: invalid serverlist");
+
+    std::vector<std::string> endpoints;
+    for (const auto& server : serverlist) {
+        if (server.value("type", "") != "websockets" || !server.contains("endpoint") || !server["endpoint"].is_string())
+            continue;
+        auto endpoint = server["endpoint"].get<std::string>();
+        if (!endpoint.empty()) endpoints.push_back(std::move(endpoint));
+    }
+    if (endpoints.empty()) throw std::runtime_error("No websocket CM endpoints found");
+    return endpoints;
 }
 
 } // namespace
 
 struct Session::Impl {
-    std::mutex io_mutex;
+    std::mutex connect_mutex; // serializes open() and close()
+
+    std::mutex io_mutex; // guards curl
     CURL* curl = nullptr;
-    std::uint64_t steamid = 0x01A0000000000000ULL;
-    std::int32_t sessionid = 0;
+    // Assigned by the logon; atomic because a call racing a reconnect may still read them.
+    std::atomic<std::uint64_t> steamid{anonymous_steamid};
+    std::atomic<std::int32_t> sessionid{0};
     std::atomic<std::uint64_t> next_job_id{1};
 
-    std::mutex jobs_mutex;
+    std::mutex jobs_mutex; // guards pending_jobs, and connected transitions to false
     std::unordered_map<std::uint64_t, std::promise<Packet>> pending_jobs;
-
     std::atomic<bool> connected{false};
+
     std::atomic<bool> stopping{false};
     std::thread reader_thread;
     std::thread heartbeat_thread;
-    std::condition_variable heartbeat_cv;
     std::mutex heartbeat_mutex;
+    std::condition_variable heartbeat_cv;
+
+    static constexpr std::uint64_t anonymous_steamid = 0x01A0000000000000ULL;
 
     ~Impl() {
-        disconnect();
+        std::lock_guard lock(connect_mutex);
+        close();
     }
 
-    void disconnect() {
-        bool was_connected = connected.exchange(false);
-        stopping.store(true);
-        heartbeat_cv.notify_all();
-
+    // Logs off (if still connected), stops the threads and releases the socket. Requires connect_mutex.
+    void close() {
+        bool was_connected = mark_disconnected("Session disconnected");
+        stop_threads();
         if (was_connected) {
-            // Best effort ClientLogOff (706)
             try {
-                auto pkt = serialize_packet(706, steamid, sessionid, ~0ULL, ~0ULL, "", {});
-                send_packet(pkt);
+                send_packet(serialize_packet(emsg::client_log_off, steamid, sessionid, no_job, no_job, "", {}));
             } catch (...) {}
         }
-
         if (heartbeat_thread.joinable()) heartbeat_thread.join();
         if (reader_thread.joinable()) reader_thread.join();
 
-        {
-            std::lock_guard<std::mutex> lk(jobs_mutex);
-            for (auto& [id, prom] : pending_jobs) {
-                try {
-                    prom.set_exception(std::make_exception_ptr(std::runtime_error("Session disconnected")));
-                } catch (...) {}
-            }
-            pending_jobs.clear();
-        }
+        std::lock_guard lock(io_mutex);
+        if (curl) curl_easy_cleanup(curl);
+        curl = nullptr;
+    }
 
+    void stop_threads() {
         {
-            std::lock_guard<std::mutex> lk(io_mutex);
-            if (curl) {
-                curl_easy_cleanup(curl);
-                curl = nullptr;
+            std::lock_guard lock(heartbeat_mutex); // no lost wakeup between the heartbeat's check and wait
+            stopping = true;
+        }
+        heartbeat_cv.notify_all();
+    }
+
+    // Stops accepting calls and fails the ones in flight; returns whether the session was connected.
+    bool mark_disconnected(const char* reason) {
+        std::lock_guard lock(jobs_mutex);
+        bool was_connected = connected.exchange(false);
+        for (auto& [id, promise] : pending_jobs)
+            promise.set_exception(std::make_exception_ptr(std::runtime_error(reason)));
+        pending_jobs.clear();
+        return was_connected;
+    }
+
+    // Tries the CM endpoints in turn. Requires connect_mutex and a closed session.
+    void open() {
+        std::vector<std::string> endpoints = cm_endpoints();
+        constexpr std::size_t max_attempts = 5;
+        std::string last_error = "no endpoint reachable";
+        for (std::size_t i = 0; i < std::min(endpoints.size(), max_attempts); ++i) {
+            try {
+                if (logon("wss://" + endpoints[i] + "/cmsocket/")) return;
+                last_error = "no logon response";
+            } catch (const std::exception& e) {
+                last_error = e.what();
+            }
+            std::lock_guard lock(io_mutex);
+            if (curl) curl_easy_cleanup(curl);
+            curl = nullptr;
+        }
+        throw std::runtime_error("Failed to connect to Steam CM: " + last_error);
+    }
+
+    // Opens the socket and logs on anonymously; on success starts the reader and heartbeat threads.
+    // Returns false on a connection failure or timeout, throws on a rejected logon.
+    bool logon(const std::string& url) {
+        CURL* handle = curl_easy_init();
+        if (!handle) throw std::runtime_error("curl_easy_init failed");
+        curl_easy_setopt(handle, CURLOPT_URL, url.c_str());
+        set_ca_bundle(handle);
+        curl_easy_setopt(handle, CURLOPT_CONNECT_ONLY, 2L);
+        curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT, 10L);
+        {
+            std::lock_guard lock(io_mutex);
+            curl = handle; // owned (and cleaned up on failure) by open()
+        }
+        if (curl_easy_perform(handle) != CURLE_OK) return false;
+
+        Bytes logon_body = concat({
+            encode_uint(1, 65581),        // protocol version
+            encode_uint(3, 0),            // cell id
+            encode_string(6, "english"),  // language
+            encode_uint(7, 4294967112u),  // client_os_type: Linux 6.x (-184)
+        });
+        send_packet(serialize_packet(emsg::client_logon, anonymous_steamid, 0, no_job, no_job, "", logon_body));
+
+        // No other thread uses the handle yet, so the response is read synchronously.
+        Bytes partial, message;
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (std::chrono::steady_clock::now() < deadline) {
+            Receive result = receive(handle, partial, message);
+            if (result == Receive::closed) return false;
+            if (result == Receive::more) continue;
+            if (result == Receive::again) {
+                wait_socket(active_socket(handle), false, 50);
+                continue;
+            }
+            for (const auto& packet : parse_message(message)) {
+                if (packet.emsg != emsg::client_logon_response) continue;
+                int eresult = packet.eresult;
+                int heartbeat_seconds = 9;
+                Reader reader(packet.body);
+                Field field;
+                while (reader.next(field)) {
+                    if (field.number == 1 && field.wire == 0) eresult = static_cast<int>(field.integer);
+                    else if (field.number == 3 && field.wire == 0) heartbeat_seconds = static_cast<int>(field.integer);
+                }
+                if (eresult != 1) throw std::runtime_error("Logon failed with EResult " + std::to_string(eresult));
+                steamid = packet.steamid;
+                sessionid = packet.sessionid;
+                stopping = false;
+                connected = true;
+                reader_thread = std::thread(&Impl::reader_loop, this);
+                heartbeat_thread = std::thread(&Impl::heartbeat_loop, this, std::clamp(heartbeat_seconds, 1, 60));
+                return true;
             }
         }
+        return false;
     }
 
     void send_packet(std::span<const std::uint8_t> data) {
-        std::lock_guard<std::mutex> lk(io_mutex);
+        std::lock_guard lock(io_mutex);
         if (!curl) throw std::runtime_error("Session not connected");
-
-        curl_socket_t sock = CURL_SOCKET_BAD;
-        curl_easy_getinfo(curl, CURLINFO_ACTIVESOCKET, &sock);
-
-        std::size_t offset = 0;
-        while (offset < data.size()) {
+        curl_socket_t socket = active_socket(curl);
+        for (std::size_t offset = 0; offset < data.size();) {
             std::size_t sent = 0;
             CURLcode rc = curl_ws_send(curl, data.data() + offset, data.size() - offset, &sent, 0, CURLWS_BINARY);
             if (rc == CURLE_AGAIN) {
-                if (sock == CURL_SOCKET_BAD) throw std::runtime_error("curl socket unavailable for send");
-                if (!wait_socket(sock, true, 5000)) throw std::runtime_error("curl_ws_send poll timeout");
+                if (socket == CURL_SOCKET_BAD) throw std::runtime_error("curl socket unavailable for send");
+                if (!wait_socket(socket, true, 5000)) throw std::runtime_error("curl_ws_send poll timeout");
                 continue;
             }
             if (rc != CURLE_OK) throw std::runtime_error(std::string("curl_ws_send failed: ") + curl_easy_strerror(rc));
@@ -237,267 +369,112 @@ struct Session::Impl {
         }
     }
 
-    void dispatch_frame(const Bytes& frame) {
+    void dispatch(std::span<const std::uint8_t> message) {
+        std::vector<Packet> packets;
         try {
-            Packet raw = parse_proto_packet(frame);
-            std::vector<Packet> packets;
-            unpack_packet(raw, packets);
-            for (auto& p : packets) {
-                if (p.emsg == 757) { // ClientLoggedOff
-                    connected.store(false);
-                    stopping.store(true);
-                }
-                if (p.jobid_target != ~0ULL) {
-                    std::promise<Packet> prom;
-                    bool found = false;
-                    {
-                        std::lock_guard<std::mutex> lk(jobs_mutex);
-                        auto it = pending_jobs.find(p.jobid_target);
-                        if (it != pending_jobs.end()) {
-                            prom = std::move(it->second);
-                            pending_jobs.erase(it);
-                            found = true;
-                        }
-                    }
-                    if (found) prom.set_value(std::move(p));
-                }
+            packets = parse_message(message);
+        } catch (const std::exception&) {
+            return; // malformed message: nothing to route
+        }
+        for (auto& packet : packets) {
+            if (packet.emsg == emsg::client_logged_off) stop_threads();
+            if (packet.jobid_target == no_job) continue;
+            std::promise<Packet> promise;
+            {
+                std::lock_guard lock(jobs_mutex);
+                auto it = pending_jobs.find(packet.jobid_target);
+                if (it == pending_jobs.end()) continue;
+                promise = std::move(it->second);
+                pending_jobs.erase(it);
             }
-        } catch (...) {}
+            promise.set_value(std::move(packet));
+        }
     }
 
     void reader_loop() {
-        Bytes frame_accumulator;
-        while (!stopping.load()) {
-            std::uint8_t buf[65536];
-            std::size_t nread = 0;
-            const struct curl_ws_frame* meta = nullptr;
-            CURLcode rc;
-            curl_socket_t sock = CURL_SOCKET_BAD;
-
+        Bytes partial, message;
+        while (!stopping) {
+            Receive result;
+            curl_socket_t socket;
             {
-                std::lock_guard<std::mutex> lk(io_mutex);
+                std::lock_guard lock(io_mutex);
                 if (!curl) break;
-                curl_easy_getinfo(curl, CURLINFO_ACTIVESOCKET, &sock);
-                rc = curl_ws_recv(curl, buf, sizeof(buf), &nread, &meta);
+                result = receive(curl, partial, message);
+                socket = active_socket(curl);
             }
-
-            if (rc == CURLE_AGAIN) {
-                if (sock == CURL_SOCKET_BAD) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                    continue;
-                }
-                wait_socket(sock, false, 50); // without holding io_mutex
-                continue;
-            }
-
-            if (rc != CURLE_OK) break;
-            if (meta && (meta->flags & CURLWS_CLOSE)) break;
-
-            frame_accumulator.insert(frame_accumulator.end(), buf, buf + nread);
-            if (meta && meta->bytesleft == 0) {
-                Bytes frame = std::move(frame_accumulator);
-                frame_accumulator.clear();
-                dispatch_frame(frame);
-            }
+            if (result == Receive::closed) break;
+            if (result == Receive::message) dispatch(message);
+            else if (result == Receive::more) continue;
+            else if (socket == CURL_SOCKET_BAD) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            else wait_socket(socket, false, 50); // without holding io_mutex, so senders can proceed
         }
-
-        // Connection closed or error
-        connected.store(false);
-        std::lock_guard<std::mutex> lk(jobs_mutex);
-        for (auto& [id, prom] : pending_jobs) {
-            try {
-                prom.set_exception(std::make_exception_ptr(std::runtime_error("Connection closed")));
-            } catch (...) {}
-        }
-        pending_jobs.clear();
+        mark_disconnected("Connection closed");
     }
 
-    void heartbeat_loop(int interval_sec) {
-        while (!stopping.load()) {
-            std::unique_lock<std::mutex> lk(heartbeat_mutex);
-            if (heartbeat_cv.wait_for(lk, std::chrono::seconds(interval_sec), [&] { return stopping.load(); }))
-                break;
-
+    void heartbeat_loop(int interval_seconds) {
+        std::unique_lock lock(heartbeat_mutex);
+        while (!heartbeat_cv.wait_for(lock, std::chrono::seconds(interval_seconds), [&] { return stopping.load(); })) {
+            if (!connected) break;
             try {
-                if (connected.load()) {
-                    auto pkt = serialize_packet(703, steamid, sessionid, ~0ULL, ~0ULL, "", {});
-                    send_packet(pkt);
-                }
+                send_packet(serialize_packet(emsg::client_heartbeat, steamid, sessionid, no_job, no_job, "", {}));
             } catch (...) {
-                break;
+                break; // the reader notices the broken connection
             }
         }
     }
 
-    Packet call(std::uint32_t emsg, std::string_view job_name, std::span<const std::uint8_t> body) {
-        if (!connected.load()) throw std::runtime_error("Session not connected");
-
-        std::uint64_t jobid = next_job_id.fetch_add(1);
-        std::future<Packet> fut;
+    Packet call(std::uint32_t type, std::string_view job_name, std::span<const std::uint8_t> body) {
+        std::uint64_t jobid = next_job_id++;
+        std::future<Packet> future;
         {
-            std::lock_guard<std::mutex> lk(jobs_mutex);
-            fut = pending_jobs[jobid].get_future();
+            // Checked under jobs_mutex so the job cannot be registered after the reader failed the pending ones.
+            std::lock_guard lock(jobs_mutex);
+            if (!connected) throw std::runtime_error("Session not connected");
+            future = pending_jobs[jobid].get_future();
         }
-
-        try {
-            send_packet(serialize_packet(emsg, steamid, sessionid, jobid, ~0ULL, job_name, body));
-        } catch (...) {
-            std::lock_guard<std::mutex> lk(jobs_mutex);
+        auto forget = [&] {
+            std::lock_guard lock(jobs_mutex);
             pending_jobs.erase(jobid);
+        };
+        try {
+            send_packet(serialize_packet(type, steamid, sessionid, jobid, no_job, job_name, body));
+        } catch (...) {
+            forget();
             throw;
         }
-
-        if (fut.wait_for(std::chrono::seconds(30)) == std::future_status::timeout) {
-            std::lock_guard<std::mutex> lk(jobs_mutex);
-            pending_jobs.erase(jobid);
-            throw std::runtime_error("Steam CM request timed out (EMsg " + std::to_string(emsg) + " " +
+        if (future.wait_for(std::chrono::seconds(30)) == std::future_status::timeout) {
+            forget();
+            throw std::runtime_error("Steam CM request timed out (EMsg " + std::to_string(type) + " " +
                                      std::string(job_name) + ")");
         }
-        return fut.get();
+        return future.get();
     }
 };
 
-Session::Session() : impl_(new Impl) {}
-Session::~Session() { delete impl_; }
+Session::Session() : impl_(std::make_unique<Impl>()) {}
+Session::~Session() = default;
 
 void Session::connect() {
-    if (impl_->connected.load()) throw std::runtime_error("Session already connected");
-
-    HttpResponse dir_resp = http_request("https://api.steampowered.com/ISteamDirectory/GetCMListForConnect/v1/?cellid=0");
-    if (dir_resp.status != 200)
-        throw std::runtime_error("GetCMListForConnect: HTTP " + std::to_string(dir_resp.status));
-
-    auto root = nlohmann::json::parse(std::string_view(reinterpret_cast<const char*>(dir_resp.body.data()),
-                                                       dir_resp.body.size()));
-    const auto& serverlist = root.at("response").at("serverlist");
-    if (!serverlist.is_array())
-        throw std::runtime_error("GetCMListForConnect: invalid serverlist");
-
-    std::vector<std::string> endpoints;
-    for (const auto& item : serverlist) {
-        if (item.value("type", "") == "websockets" && item.contains("endpoint")) {
-            std::string ep = item["endpoint"].get<std::string>();
-            if (!ep.empty()) endpoints.push_back(std::move(ep));
-        }
-    }
-
-    if (endpoints.empty()) throw std::runtime_error("No websocket CM endpoints found");
-
-    constexpr std::size_t max_attempts = 5;
-    std::size_t attempts = std::min(endpoints.size(), max_attempts);
-    std::string last_error;
-
-    for (std::size_t i = 0; i < attempts; ++i) {
-        const std::string& ep = endpoints[i];
-        std::string url = "wss://" + ep + "/cmsocket/";
-
-        CURL* c = curl_easy_init();
-        if (!c) continue;
-        curl_easy_setopt(c, CURLOPT_URL, url.c_str());
-        set_ca_bundle(c);
-        curl_easy_setopt(c, CURLOPT_CONNECT_ONLY, 2L);
-        curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 10L);
-
-        if (curl_easy_perform(c) != CURLE_OK) {
-            curl_easy_cleanup(c);
-            continue;
-        }
-
-        impl_->curl = c;
-
-        // Build ClientLogon (5514)
-        Bytes logon_body;
-        auto append = [&](Bytes b) { logon_body.insert(logon_body.end(), b.begin(), b.end()); };
-        append(encode_uint(1, 65581));       // protocol version
-        append(encode_uint(3, 0));           // cell id
-        append(encode_string(6, "english")); // language
-        append(encode_uint(7, 4294967112u)); // client_os_type: Linux 6.x (-184)
-        auto logon_pkt = serialize_packet(5514, impl_->steamid, 0, ~0ULL, ~0ULL, "", logon_body);
-
-        try {
-            impl_->send_packet(logon_pkt);
-
-            // Read logon response (751) synchronously
-            int heartbeat_seconds = 9;
-            bool logon_ok = false;
-            int eresult = 0;
-
-            Bytes frame_acc;
-            auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-            while (std::chrono::steady_clock::now() < deadline && !logon_ok) {
-                std::uint8_t buf[65536];
-                std::size_t nread = 0;
-                const struct curl_ws_frame* meta = nullptr;
-                CURLcode rc = curl_ws_recv(c, buf, sizeof(buf), &nread, &meta);
-                if (rc == CURLE_AGAIN) {
-                    curl_socket_t sock = CURL_SOCKET_BAD;
-                    curl_easy_getinfo(c, CURLINFO_ACTIVESOCKET, &sock);
-                    wait_socket(sock, false, 50);
-                    continue;
-                }
-                if (rc != CURLE_OK) break;
-                if (meta && (meta->flags & CURLWS_CLOSE)) break;
-
-                frame_acc.insert(frame_acc.end(), buf, buf + nread);
-                if (meta && meta->bytesleft == 0) {
-                    Bytes frame = std::move(frame_acc);
-                    frame_acc.clear();
-
-                    Packet raw = parse_proto_packet(frame);
-                    std::vector<Packet> packets;
-                    unpack_packet(raw, packets);
-                    for (const auto& p : packets) {
-                        if (p.emsg == 751) { // ClientLogOnResponse
-                            eresult = p.eresult;
-                            Reader br(p.body);
-                            Field f;
-                            while (br.next(f)) {
-                                if (f.number == 1 && f.wire == 0) eresult = static_cast<int>(f.integer);
-                                else if (f.number == 3 && f.wire == 0) heartbeat_seconds = static_cast<int>(f.integer);
-                            }
-                            if (eresult == 1) {
-                                impl_->steamid = p.steamid;
-                                impl_->sessionid = p.sessionid;
-                                logon_ok = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (logon_ok) {
-                impl_->connected.store(true);
-                impl_->reader_thread = std::thread(&Impl::reader_loop, impl_);
-                impl_->heartbeat_thread = std::thread(&Impl::heartbeat_loop, impl_, heartbeat_seconds);
-                return; // successfully connected!
-            }
-
-            last_error = "Logon failed with EResult " + std::to_string(eresult);
-        } catch (const std::exception& ex) {
-            last_error = ex.what();
-        }
-
-        // Clean up before trying next CM
-        curl_easy_cleanup(c);
-        impl_->curl = nullptr;
-    }
-
-    throw std::runtime_error("Failed to connect to Steam CM: " + last_error);
+    std::lock_guard lock(impl_->connect_mutex);
+    if (impl_->connected) return;
+    impl_->close(); // joins the threads of a dropped connection
+    impl_->open();
 }
 
-Bytes Session::request(std::uint32_t emsg, std::span<const std::uint8_t> body) {
-    return impl_->call(emsg, "", body).body;
+Bytes Session::request(std::uint32_t type, std::span<const std::uint8_t> body) {
+    connect();
+    return impl_->call(type, "", body).body;
 }
 
 Bytes Session::rpc(std::string_view method, std::span<const std::uint8_t> body) {
-    Packet resp = impl_->call(151, method, body);
-    if (resp.eresult != 1) {
-        std::string msg = "RPC " + std::string(method) + " failed: EResult " + std::to_string(resp.eresult);
-        if (!resp.error_message.empty()) msg += " (" + resp.error_message + ")";
-        throw std::runtime_error(msg);
+    connect();
+    Packet response = impl_->call(emsg::service_method_call, method, body);
+    if (response.eresult != 1) {
+        std::string message = "RPC " + std::string(method) + " failed: EResult " + std::to_string(response.eresult);
+        if (!response.error_message.empty()) message += " (" + response.error_message + ")";
+        throw std::runtime_error(message);
     }
-    return std::move(resp.body);
+    return std::move(response.body);
 }
 
 } // namespace pxsteamdl::detail
