@@ -720,18 +720,13 @@ struct ItemState {
     std::set<std::string> expected; // path_key of every path the item consists of
     std::vector<std::unique_ptr<Pending>> pending;
     std::vector<std::pair<Pending*, const Chunk*>> chunks;
+    std::size_t next_chunk = 0; // next to hand out; guarded by Downloader::queue_mutex_
     std::atomic<std::size_t> remaining{0};
     std::atomic<bool> failed{false};
     std::mutex mutex; // guards done, error and progress calls
     std::uint64_t done = 0;
     std::uint64_t total = 0;
     std::string error;
-};
-
-struct Task {
-    ItemState* state;
-    Pending* output;
-    const Chunk* chunk;
 };
 
 // One download() call: planners resolve items into chunk tasks, a shared worker pool fetches chunks of all
@@ -766,7 +761,10 @@ private:
     std::mutex queue_mutex_;
     std::condition_variable queue_ready_;
     std::condition_variable item_slot_free_;
-    std::deque<Task> queue_;
+    // Items with chunks left to hand out. Workers rotate over the first planners_ of them, so parallel_items items
+    // download side by side and the next one starts as soon as one of them has no chunks left, instead of queueing
+    // behind every chunk of the others.
+    std::deque<ItemState*> ready_;
     std::size_t active_planners_ = 0;
     std::size_t open_items_ = 0; // planned but not finished; bounds open temporary files
 
@@ -914,7 +912,7 @@ private:
         if (stop_.stop_requested()) fail("cancelled");
         state.remaining = state.chunks.size();
         std::lock_guard lock(queue_mutex_);
-        for (auto [output, chunk] : state.chunks) queue_.push_back({&state, output, chunk});
+        ready_.push_back(&state);
         queue_ready_.notify_all();
         return true;
     }
@@ -922,20 +920,26 @@ private:
     void work(std::size_t worker) {
         std::size_t host = worker; // each worker sticks to one CDN host and moves on only after a failure
         for (;;) {
-            Task task;
+            ItemState* item;
+            std::pair<Pending*, const Chunk*> task;
             {
                 std::unique_lock lock(queue_mutex_);
-                queue_ready_.wait(lock, [&] { return !queue_.empty() || active_planners_ == 0; });
-                if (queue_.empty()) return;
-                task = queue_.front();
-                queue_.pop_front();
+                queue_ready_.wait(lock, [&] { return !ready_.empty() || active_planners_ == 0; });
+                if (ready_.empty()) return;
+                item = ready_.front();
+                ready_.pop_front();
+                task = item->chunks[item->next_chunk++];
+                // Back into the rotation window; the state lives until its last handed-out chunk completes.
+                if (item->next_chunk < item->chunks.size())
+                    ready_.insert(ready_.begin() + std::min(planners_ - 1, ready_.size()), item);
             }
-            ItemState& state = *task.state;
+            ItemState& state = *item;
+            auto [output, chunk] = task;
             if (!state.failed) {
                 try {
-                    fetch_chunk(state, *task.output, *task.chunk, host);
+                    fetch_chunk(state, *output, *chunk, host);
                     std::lock_guard lock(state.mutex);
-                    state.done += task.chunk->original;
+                    state.done += chunk->original;
                     if (state.job->progress) state.job->progress(state.done, state.total);
                 } catch (const std::exception& e) {
                     std::lock_guard lock(state.mutex);

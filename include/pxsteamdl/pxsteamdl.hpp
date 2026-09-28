@@ -23,7 +23,8 @@ struct Progress {
 };
 
 struct Options {
-    // Items resolved (manifest fetched, files planned) concurrently.
+    // Items downloaded side by side; the next item starts as soon as one of them has all its chunks under way.
+    // Up to twice as many are resolved (manifest fetched, files planned) ahead.
     unsigned parallel_items = 2;
     // Chunk downloads share one pool of parallel_items * threads_per_item workers across all items.
     unsigned threads_per_item = 4;
