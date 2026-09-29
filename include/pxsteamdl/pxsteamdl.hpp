@@ -20,6 +20,24 @@ struct Progress {
     std::uint64_t item_id;
     std::uint64_t bytes_done;
     std::uint64_t bytes_total;
+    // Workshop title of the item; empty if unknown.
+    std::string title;
+};
+
+// What Steam says about an item, known before any bytes are downloaded. Not an outcome: see Result.
+struct ItemInfo {
+    std::uint64_t item_id;
+    std::string title;
+    // Empty if Steam accepted the item. Otherwise why it was rejected (missing from the answer, a non-success
+    // result code, unusable details). Download failures come later, in Result::error.
+    std::string error;
+};
+
+struct Result {
+    std::uint64_t item_id;
+    std::string title;
+    std::filesystem::path path;
+    std::string error;
 };
 
 struct Options {
@@ -28,19 +46,15 @@ struct Options {
     unsigned parallel_items = 2;
     // Chunk downloads share one pool of parallel_items * threads_per_item workers across all items.
     unsigned threads_per_item = 4;
+    // Called on the download() thread once per item, after each batch of up to 100 items has been answered by Steam
+    // (not during the HTTP request) and before any bytes are downloaded.
+    std::function<void(const ItemInfo&)> on_resolved;
     // Called from worker threads.
     std::function<void(const Progress&)> on_progress;
     // Cancellation: once stop is requested, in-flight chunk requests finish, remaining work is skipped and every
     // unfinished item reports Result::error == "cancelled"; completed items stay ok and download() returns normally.
     // As with failures, temporary files are removed and existing files of unfinished items are not replaced.
     std::stop_token stop;
-};
-
-struct Result {
-    std::uint64_t item_id;
-    std::string title;
-    std::filesystem::path path;
-    std::string error;
 };
 
 class Client {

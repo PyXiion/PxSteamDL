@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(PxSteamDL VERSION 0.1.1 LANGUAGES CXX)
+project(PxSteamDL VERSION 0.2.0 LANGUAGES CXX)
 
 option(PXSTEAMDL_BUILD_CLI "Build the pxsteamdl command-line tool" ${PROJECT_IS_TOP_LEVEL})
 option(PXSTEAMDL_BUILD_PYTHON "Build the Python extension module" OFF)

@@ -63,6 +63,7 @@ Standalone prebuilt binaries for Linux x86_64, macOS arm64, and Windows x64 are 
 pxsteamdl::Client client;  // anonymous logon; throws on failure
 std::vector<std::uint64_t> ids{2009463077, 818773962};
 pxsteamdl::Options options;
+options.on_resolved = [](const pxsteamdl::ItemInfo& i) { /* title known, no bytes yet; called on this thread */ };
 options.on_progress = [](const pxsteamdl::Progress& p) { /* called from worker threads */ };
 for (const auto& r : client.download(ids, "mods", options))
     if (!r.error.empty()) std::fprintf(stderr, "%llu: %s\n", (unsigned long long)r.item_id, r.error.c_str());
@@ -98,14 +99,17 @@ import pxsteamdl
 client = pxsteamdl.Client()  # anonymous logon; raises RuntimeError on failure
 
 def on_progress(p: pxsteamdl.Progress) -> None:  # called from worker threads
-    print(f"{p.item_id}: {p.bytes_done}/{p.bytes_total}")
+    print(f"{p.item_id} {p.title}: {p.bytes_done}/{p.bytes_total}")
 
-for r in client.download([2009463077, 818773962], "mods", on_progress=on_progress):
+def on_resolved(i: pxsteamdl.ItemInfo) -> None:  # once per item, before any bytes; same thread as download()
+    print(f"queued {i.item_id}: {i.title}" if not i.error else f"{i.item_id}: {i.error}")
+
+for r in client.download([2009463077, 818773962], "mods", on_progress=on_progress, on_resolved=on_resolved):
     print(r.item_id, r.title, r.path if r.ok else r.error)
 ```
 
 `download` releases the GIL, and one `Client` may be used from several threads.
-An exception raised by `on_progress` is reported like an exception in a thread (`sys.unraisablehook`) and does not stop the download.
+An exception raised by `on_progress` or `on_resolved` is reported like an exception in a thread (`sys.unraisablehook`) and does not stop the download.
 The package ships type stubs.
 
 `download` also takes `cancel=pxsteamdl.CancelToken()`; calling `token.cancel()` from another thread stops it the same way as `Options::stop` in C++.
@@ -113,7 +117,7 @@ The package ships type stubs.
 ### asyncio
 
 `AsyncClient` runs logon and downloads in worker threads, so the event loop keeps running. Several downloads may run concurrently on one client.
-`on_progress` is called on the event loop thread.
+`on_progress` and `on_resolved` are called on the event loop thread.
 Cancelling the task (including via `asyncio.wait_for` timeouts) stops the download, waits until in-flight requests finish and temporary files are removed, then raises `CancelledError`.
 
 ```py

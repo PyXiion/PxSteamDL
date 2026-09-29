@@ -9,7 +9,7 @@ import functools
 import os
 from collections.abc import Callable, Sequence
 
-from ._pxsteamdl import CancelToken, Client, Progress, Result
+from ._pxsteamdl import CancelToken, Client, ItemInfo, Progress, Result
 
 
 class AsyncClient:
@@ -34,10 +34,12 @@ class AsyncClient:
         parallel_items: int = 2,
         threads_per_item: int = 4,
         on_progress: Callable[[Progress], object] | None = None,
+        on_resolved: Callable[[ItemInfo], object] | None = None,
     ) -> list[Result]:
         """Downloads each item into root/<item id>/, like Client.download.
 
-        on_progress is called on the event loop thread. If the task is cancelled, the download is
+        on_progress and on_resolved are called on the event loop thread; on_resolved fires once per item as soon
+        as its title is known, before any bytes are downloaded. If the task is cancelled, the download is
         stopped and awaited (temporary files removed, finished items kept) before CancelledError propagates.
         """
         loop = asyncio.get_running_loop()
@@ -57,6 +59,7 @@ class AsyncClient:
                 parallel_items=parallel_items,
                 threads_per_item=threads_per_item,
                 on_progress=callback,
+                on_resolved=None if on_resolved is None else functools.partial(loop.call_soon_threadsafe, on_resolved),
                 cancel=token,
             ),
         )

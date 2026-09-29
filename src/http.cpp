@@ -147,7 +147,7 @@ HttpResponse http_request(std::string_view url, std::string_view method, std::st
     return response;
 }
 
-std::vector<Item> fetch_items(std::span<const std::uint64_t> ids) {
+std::vector<Item> fetch_items(std::span<const std::uint64_t> ids, const std::function<void(const Item&)>& on_item) {
     constexpr std::size_t batch = 100;
     std::vector<Item> items;
     items.reserve(ids.size());
@@ -186,6 +186,7 @@ std::vector<Item> fetch_items(std::span<const std::uint64_t> ids) {
                 item.id = id;
                 item.error = "not returned by Steam";
             }
+            if (on_item) on_item(items.back());
         }
     }
     return items;

@@ -39,7 +39,8 @@ struct Item {
     std::string error;
 };
 
-std::vector<Item> fetch_items(std::span<const std::uint64_t> ids);
+// on_item, if set, is called on the calling thread for each item as soon as its batch is resolved.
+std::vector<Item> fetch_items(std::span<const std::uint64_t> ids, const std::function<void(const Item&)>& on_item = {});
 
 // Steam CM message types (SteamKit2 EMsg).
 namespace emsg {

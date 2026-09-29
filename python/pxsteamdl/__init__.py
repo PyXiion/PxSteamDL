@@ -2,6 +2,6 @@
 """Anonymous Steam Workshop downloader (RimWorld)."""
 
 from ._async import AsyncClient
-from ._pxsteamdl import CancelToken, Client, Progress, Result
+from ._pxsteamdl import CancelToken, Client, ItemInfo, Progress, Result
 
-__all__ = ["AsyncClient", "CancelToken", "Client", "Progress", "Result"]
+__all__ = ["AsyncClient", "CancelToken", "Client", "ItemInfo", "Progress", "Result"]

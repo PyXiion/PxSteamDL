@@ -15,10 +15,12 @@ using namespace nb::literals;
 namespace {
 
 using ProgressCallback = nb::typed<nb::callable, void(const pxsteamdl::Progress&)>;
+using ResolvedCallback = nb::typed<nb::callable, void(const pxsteamdl::ItemInfo&)>;
 
 std::vector<pxsteamdl::Result> download(pxsteamdl::Client& client, const std::vector<std::uint64_t>& ids,
                                         const std::filesystem::path& root, int parallel_items,
                                         int threads_per_item, std::optional<ProgressCallback> on_progress,
+                                        std::optional<ResolvedCallback> on_resolved,
                                         const std::stop_source* cancel) {
     if (parallel_items < 1)
         throw nb::value_error("parallel_items must be >= 1");
@@ -42,6 +44,16 @@ std::vector<pxsteamdl::Result> download(pxsteamdl::Client& client, const std::ve
             }
         };
     }
+    if (on_resolved) {
+        options.on_resolved = [callback = nb::handle(*on_resolved)](const pxsteamdl::ItemInfo& info) {
+            nb::gil_scoped_acquire gil;
+            try {
+                callback(info);
+            } catch (nb::python_error& e) {
+                e.discard_as_unraisable(callback);
+            }
+        };
+    }
 
     nb::gil_scoped_release release;
     return client.download(ids, root, options);
@@ -55,10 +67,21 @@ NB_MODULE(_pxsteamdl, m) {
     nb::class_<pxsteamdl::Progress>(m, "Progress", "Download progress of one item.")
         .def_ro("item_id", &pxsteamdl::Progress::item_id)
         .def_ro("bytes_done", &pxsteamdl::Progress::bytes_done)
+        .def_ro("title", &pxsteamdl::Progress::title)
         .def_ro("bytes_total", &pxsteamdl::Progress::bytes_total)
         .def("__repr__", [](const pxsteamdl::Progress& p) {
-            return nb::str("Progress(item_id={}, bytes_done={}, bytes_total={})")
-                .format(p.item_id, p.bytes_done, p.bytes_total);
+            return nb::str("Progress(item_id={}, title={!r}, bytes_done={}, bytes_total={})")
+                .format(p.item_id, p.title, p.bytes_done, p.bytes_total);
+        });
+
+    nb::class_<pxsteamdl::ItemInfo>(m, "ItemInfo", "What Steam says about an item, known before any bytes are downloaded.")
+        .def_ro("item_id", &pxsteamdl::ItemInfo::item_id)
+        .def_ro("title", &pxsteamdl::ItemInfo::title)
+        .def_ro("error", &pxsteamdl::ItemInfo::error,
+                "Empty if Steam accepted the item; otherwise why it was rejected (not returned, non-success result\n"
+                "code, unusable details). Download failures are reported later, in Result.error.")
+        .def("__repr__", [](const pxsteamdl::ItemInfo& i) {
+            return nb::str("ItemInfo(item_id={}, title={!r}, error={!r})").format(i.item_id, i.title, i.error);
         });
 
     nb::class_<pxsteamdl::Result>(m, "Result", "Outcome of downloading one item.")
@@ -84,10 +107,14 @@ NB_MODULE(_pxsteamdl, m) {
         .def(nb::init<>(), nb::call_guard<nb::gil_scoped_release>(),
              "Logs in to Steam anonymously; raises RuntimeError on failure.")
         .def("download", &download, "ids"_a, "root"_a, nb::kw_only(), "parallel_items"_a = 2,
-             "threads_per_item"_a = 4, "on_progress"_a = nb::none(), "cancel"_a.none() = nb::none(),
+             "threads_per_item"_a = 4, "on_progress"_a = nb::none(), "on_resolved"_a = nb::none(),
+             "cancel"_a.none() = nb::none(),
              "Downloads each item into root/<item id>/, updating existing copies incrementally.\n\n"
-             "Per-item failures are reported in Result.error. on_progress is called from worker\n"
-             "threads; exceptions it raises are reported as unraisable and do not stop the download.\n"
+             "Per-item failures are reported in Result.error. on_resolved(info) is called once per item on the\n"
+             "calling thread after each batch of up to 100 items is answered by Steam, before any bytes are\n"
+             "downloaded; ItemInfo is Steam's verdict only, not a download outcome.\n"
+             "on_progress is called from worker\n"
+             "threads; exceptions either callback raises are reported as unraisable and do not stop the download.\n"
              "After cancel.cancel(), in-flight chunk requests finish, remaining work is skipped and\n"
              "unfinished items report error == \"cancelled\"; completed items stay ok.\n"
              "The GIL is released while downloading.");
