@@ -60,6 +60,7 @@ std::vector<pxsteamdl::Result> Download(pxsteamdl::Client& client, const std::ve
 
 NB_MODULE(_pxsteamdl, m) {
   m.doc() = "Anonymous Steam Workshop downloader (RimWorld).";
+  m.attr("__version__") = PXSTEAMDL_VERSION_STRING;
 
   nb::class_<pxsteamdl::Progress>(m, "Progress", "Download progress of one item.")
       .def_ro("item_id", &pxsteamdl::Progress::item_id)

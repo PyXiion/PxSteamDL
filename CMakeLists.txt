@@ -10,6 +10,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+include(GNUInstallDirs)
+
+# <pxsteamdl/version.hpp>, from the version above; the single source of the version (the Python package reads it too).
+configure_file(cmake/version.hpp.in ${CMAKE_CURRENT_BINARY_DIR}/include/pxsteamdl/version.hpp @ONLY)
+
 # All dependencies are built from source as static libraries (the Python module links them too, hence PIC).
 # CPM's find_package redirection is off: curl locates mbedTLS/zstd/zlib through the variables set below.
 set(CPM_DONT_UPDATE_MODULE_PATH ON)
@@ -227,6 +232,7 @@ set(PXSTEAMDL_CORE_SOURCES
     src/pending_file.cpp
     src/proto.cpp
     src/retry.cpp
+    src/version.cpp
     src/workshop.cpp
     src/zip.cpp
 )
@@ -238,7 +244,12 @@ add_library(pxsteamdl
     ${ca_bundle_cpp}
 )
 add_library(PxSteamDL::pxsteamdl ALIAS pxsteamdl)
-target_include_directories(pxsteamdl PUBLIC include PRIVATE src)
+target_include_directories(pxsteamdl
+    PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+           $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>
+           $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    PRIVATE src
+)
 target_link_libraries(pxsteamdl
     PRIVATE CURL::libcurl MbedTLS::mbedcrypto ZLIB::ZLIB liblzma libzstd_static nlohmann_json::nlohmann_json
     PUBLIC Threads::Threads
@@ -317,9 +328,10 @@ if(PXSTEAMDL_BUILD_TESTS)
         tests/paths_test.cpp
         tests/proto_test.cpp
         tests/retry_test.cpp
+        tests/version_test.cpp
         tests/zip_test.cpp
     )
-    target_include_directories(pxsteamdl-tests PRIVATE src tests tests/fakes include)
+    target_include_directories(pxsteamdl-tests PRIVATE src tests tests/fakes include ${CMAKE_CURRENT_BINARY_DIR}/include)
     target_link_libraries(pxsteamdl-tests
         PRIVATE GTest::gtest_main ZLIB::ZLIB MbedTLS::mbedcrypto liblzma libzstd_static nlohmann_json::nlohmann_json
                 Threads::Threads

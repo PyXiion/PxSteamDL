@@ -51,6 +51,8 @@ To build and run the unit tests, add `-DPXSTEAMDL_BUILD_TESTS=ON` and run `ctest
 pxsteamdl [-o DIR] [-j PARALLEL_ITEMS] [-t THREADS_PER_ITEM] ITEM_ID...
 ```
 
+`pxsteamdl --version` prints the version.
+
 Each item goes into `DIR/<ITEM_ID>/`, which matches steamcmd's `steamapps/workshop/content/294100/<ITEM_ID>`.
 The exit code is 1 if any item fails.
 Ctrl-C stops the batch: requests in flight finish, unfinished items are reported as `cancelled`, and the exit code is 130.
@@ -82,6 +84,10 @@ std::stop_source stop;
 options.stop = stop.get_token();
 // from another thread: stop.request_stop();
 ```
+
+`pxsteamdl::Version()` returns the version of the library, and `PXSTEAMDL_VERSION_MAJOR`, `_MINOR`, `_PATCH` and
+`_STRING` (from `<pxsteamdl/version.hpp>`, included by the main header) that of the headers; in Python it is
+`pxsteamdl.__version__`.
 
 Link against the `PxSteamDL::pxsteamdl` CMake target (e.g. after `add_subdirectory` or `CPMAddPackage`).
 The CLI executable is built as `build/pxsteamdl`.

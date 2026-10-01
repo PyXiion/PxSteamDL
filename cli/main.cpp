@@ -21,6 +21,7 @@ constexpr int kExitInterrupted = 130;
 void Usage() {
   std::fputs(
       "usage: pxsteamdl [-o DIR] [-j PARALLEL_ITEMS] [-t THREADS_PER_ITEM] ITEM_ID...\n"
+      "       pxsteamdl --version\n"
       "Downloads Steam Workshop items anonymously into DIR/<ITEM_ID>/ (default DIR: .)\n",
       stderr);
 }
@@ -56,6 +57,10 @@ int main(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     std::string_view arg = argv[i];
     bool has_value = i + 1 < argc;
+    if (arg == "--version") {
+      std::printf("pxsteamdl %.*s\n", static_cast<int>(pxsteamdl::Version().size()), pxsteamdl::Version().data());
+      return 0;
+    }
     if (arg == "-o" && has_value) {
       root = argv[++i];
     } else if (arg == "-j" && has_value && Parse(argv[i + 1], options.parallel_items)) {

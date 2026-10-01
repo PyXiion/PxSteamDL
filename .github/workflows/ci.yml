@@ -71,6 +71,9 @@ jobs:
           status=0
           ./build/pxsteamdl || status=$?
           test "$status" -eq 2
+          # The version printed is the one in CMakeLists.txt.
+          expected=$(sed -n 's/^project(PxSteamDL VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          test "$(./build/pxsteamdl --version | tr -d '\r')" = "pxsteamdl $expected"
 
       # Downloads real items from Steam. Not on Windows, where the download hangs on GitHub runners (under
       # investigation).
@@ -118,7 +121,7 @@ jobs:
         run: python -m pip install .
 
       - name: Import check
-        run: python -c "import pxsteamdl; print(pxsteamdl.Client, pxsteamdl.AsyncClient, pxsteamdl.CancelToken)"
+        run: python -c "import pxsteamdl; print(pxsteamdl.__version__, pxsteamdl.Client, pxsteamdl.AsyncClient, pxsteamdl.CancelToken)"
 
       - name: Smoke test
         if: runner.os != 'Windows'

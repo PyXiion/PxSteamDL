@@ -8,9 +8,16 @@
 #include <span>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <vector>
 
+#include "pxsteamdl/version.hpp"
+
 namespace pxsteamdl {
+
+// The version of the library, e.g. "1.2.3". PXSTEAMDL_VERSION_MAJOR, _MINOR, _PATCH and _STRING (in
+// pxsteamdl/version.hpp, included above) are the version of the headers a program was compiled against.
+std::string_view Version();
 
 namespace detail {
 class Session;
