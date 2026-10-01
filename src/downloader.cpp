@@ -23,6 +23,7 @@
 #include "cm_packet.hpp"
 #include "common.hpp"
 #include "crypto.hpp"
+#include "eresult.hpp"
 #include "http.hpp"
 #include "manifest.hpp"
 #include "paths.hpp"
@@ -212,19 +213,20 @@ class Downloader::Impl {
                                     Concat({EncodeUint(depot_key_field::kRequestDepotId, depot),
                                             EncodeUint(depot_key_field::kRequestAppId, app_id)}));
     AesKey key{};
-    std::uint64_t eresult = 0;
+    std::int64_t eresult = 0;
     bool has_key = false;
     ProtoReader reader(reply);
     while (auto field = reader.next()) {
       if (field->is(depot_key_field::kResponseEResult, WireType::kVarint)) {
-        eresult = field->integer;
+        eresult = static_cast<std::int64_t>(field->integer);
       } else if (field->is(depot_key_field::kResponseKey, WireType::kLengthDelimited)) {
         if (field->bytes.size() != key.size()) Fail("depot key response: invalid key length");
         std::copy(field->bytes.begin(), field->bytes.end(), key.begin());
         has_key = true;
       }
     }
-    if (eresult != kEResultOk || !has_key) Fail("depot key request failed: eresult " + std::to_string(eresult));
+    if (eresult != kEResultOk) Fail("depot key request failed: " + DescribeEResult(eresult));
+    if (!has_key) Fail("depot key response lacks the key");
     return m_keys.emplace(depot, key).first->second;
   }
 

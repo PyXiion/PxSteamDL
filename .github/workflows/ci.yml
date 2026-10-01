@@ -87,10 +87,12 @@ jobs:
           echo damaged >> "$mods/2009463077/About/About.xml"
           ./build/pxsteamdl -o "$mods" 2009463077
           test "$(cksum < "$mods/2009463077/About/About.xml")" = "$expected"
-          # An unknown item fails alone, with exit code 1.
+          # An unknown item fails alone, with exit code 1 and a readable reason.
           status=0
-          ./build/pxsteamdl -o "$mods" 2009463077 1 || status=$?
+          ./build/pxsteamdl -o "$mods" 2009463077 1 > "$RUNNER_TEMP/out.txt" || status=$?
+          cat "$RUNNER_TEMP/out.txt"
           test "$status" -eq 1
+          grep -q "Steam rejected the item: not found (EResult 9)" "$RUNNER_TEMP/out.txt"
 
   python:
     strategy:

@@ -11,6 +11,7 @@
 #include <nlohmann/json.hpp>
 
 #include "common.hpp"
+#include "eresult.hpp"
 #include "http.hpp"
 
 namespace pxsteamdl::detail {
@@ -53,8 +54,8 @@ Item ParseItem(std::uint64_t id, const nlohmann::json& entry) {
   Item item;
   item.id = id;
   try {
-    if (std::uint64_t result = U64Field(entry, "result"); result != kEResultOk) {
-      item.error = "Steam result " + std::to_string(result);
+    if (auto result = static_cast<std::int64_t>(U64Field(entry, "result")); result != kEResultOk) {
+      item.error = "Steam rejected the item: " + DescribeEResult(result);
       return item;
     }
     item.manifest_id = U64Field(entry, "hcontent_file");

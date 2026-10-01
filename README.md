@@ -152,7 +152,8 @@ asyncio.run(main())
   or with administrator rights; otherwise an item that contains symlinks fails with an error saying so.
 - Item details are looked up in batches of 100 while earlier items download: each item is queued as soon as its
   batch is answered. A failed details request fails only the items of its batch.
-- A failed item is reported in `Result::error` and does not stop the other items in the batch.
+- A failed item is reported in `Result::error` and does not stop the other items in the batch. Steam's result codes
+  are spelled out, e.g. `Steam rejected the item: not found (EResult 9)`.
 
 ## License
 

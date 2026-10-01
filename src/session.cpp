@@ -21,6 +21,7 @@
 #include <nlohmann/json.hpp>
 
 #include "cm_packet.hpp"
+#include "eresult.hpp"
 #include "http.hpp"
 #include "proto.hpp"
 
@@ -290,7 +291,7 @@ class Session::Impl {
     std::optional<Packet> response = awaitLogonResponse(handle);
     if (!response) return false;
     LogonResult result = ParseLogonResponse(*response);
-    if (result.eresult != kEResultOk) Fail("Logon failed with EResult " + std::to_string(result.eresult));
+    if (result.eresult != kEResultOk) Fail("Logon failed: " + DescribeEResult(result.eresult));
 
     m_steamid = response->steamid;
     m_sessionid = response->sessionid;
@@ -436,7 +437,7 @@ Bytes Session::rpc(std::string_view method, ByteSpan body) {
   connect();
   Packet response = m_impl->call(emsg::kServiceMethodCall, method, body);
   if (response.eresult != kEResultOk) {
-    std::string message = "RPC " + std::string(method) + " failed: EResult " + std::to_string(response.eresult);
+    std::string message = "RPC " + std::string(method) + " failed: " + DescribeEResult(response.eresult);
     if (!response.error_message.empty()) message += " (" + response.error_message + ")";
     Fail(message);
   }

@@ -219,6 +219,7 @@ add_library(pxsteamdl
     src/cm_packet.cpp
     src/crypto.cpp
     src/downloader.cpp
+    src/eresult.cpp
     src/http.cpp
     src/manifest.cpp
     src/paths.cpp
@@ -297,6 +298,7 @@ if(PXSTEAMDL_BUILD_TESTS)
         tests/chunk_test.cpp
         tests/cm_packet_test.cpp
         tests/crypto_test.cpp
+        tests/eresult_test.cpp
         tests/manifest_test.cpp
         tests/paths_test.cpp
         tests/proto_test.cpp

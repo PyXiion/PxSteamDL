@@ -18,9 +18,6 @@ using ByteSpan = std::span<const std::uint8_t>;
 // Result::error of an item stopped through Options::stop; part of the public contract.
 inline constexpr char kCancelled[] = "cancelled";
 
-// Steam's EResult for success.
-inline constexpr std::int64_t kEResultOk = 1;
-
 [[noreturn]] inline void Fail(const std::string& message) { throw std::runtime_error(message); }
 
 inline ByteSpan AsBytes(std::string_view text) {
