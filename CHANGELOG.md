@@ -18,7 +18,7 @@ as described in [CONTRIBUTING.md](CONTRIBUTING.md#versioning).
   cancelled.
 - Steam's result codes are spelled out: `Steam rejected the item: not found (EResult 9)` instead of `Steam result 9`.
 - Unit tests (GoogleTest, `-DPXSTEAMDL_BUILD_TESTS=ON`), including end-to-end tests of `Client` against a pretend
-  Steam; the network smoke tests run in CI again on Linux and macOS.
+  Steam; the network smoke tests run in CI again, on all three platforms.
 
 ### Changed
 

@@ -89,10 +89,8 @@ jobs:
           expected=$(sed -n 's/^project(PxSteamDL VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
           test "$(./build/pxsteamdl --version | tr -d '\r')" = "pxsteamdl $expected"
 
-      # Downloads real items from Steam. Not on Windows, where the download hangs on GitHub runners (under
-      # investigation).
+      # Downloads real items from Steam. The timeout turns a hang (seen once on a Windows runner) into a failure.
       - name: Smoke test
-        if: runner.os != 'Windows'
         timeout-minutes: 10
         run: |
           mods="$RUNNER_TEMP/mods"
@@ -138,6 +136,5 @@ jobs:
         run: python -c "import pxsteamdl; print(pxsteamdl.__version__, pxsteamdl.Client, pxsteamdl.AsyncClient, pxsteamdl.CancelToken)"
 
       - name: Smoke test
-        if: runner.os != 'Windows'
         timeout-minutes: 10
         run: python -u .github/smoke_test.py
