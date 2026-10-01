@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: LGPL-3.0-or-later
 # Merges static libraries into one: cmake -DTOOL=<ar, libtool or lib> -DMSVC=<0|1> -DAPPLE=<0|1> -DOUTPUT=<file>
 # "-DINPUTS=<a|b|c>" -P MergeArchives.cmake
+if(NOT TOOL)
+    message(FATAL_ERROR "No tool to merge the archives with (-DTOOL=...)")
+endif()
 string(REPLACE "|" ";" inputs "${INPUTS}")
 file(REMOVE "${OUTPUT}")
 get_filename_component(output_dir "${OUTPUT}" DIRECTORY)

@@ -70,12 +70,15 @@ foreach(bundled IN LISTS bundled_targets)
 endforeach()
 # The inputs travel as one argument; "|" is the separator, since ";" would split it.
 string(JOIN "|" bundle_inputs_argument ${bundle_inputs})
-if(MSVC)
-    set(merge_tool "${CMAKE_AR}")
-elseif(APPLE)
-    set(merge_tool "${CMAKE_LIBTOOL}")
+if(APPLE)
+    # Apple's libtool, not GNU libtool (which would be called glibtool, but may come first in PATH).
+    find_program(PXSTEAMDL_LIBTOOL NAMES libtool HINTS /usr/bin REQUIRED)
+    set(merge_tool "${PXSTEAMDL_LIBTOOL}")
 else()
-    set(merge_tool "${CMAKE_AR}")
+    set(merge_tool "${CMAKE_AR}")  # ar, or lib.exe with MSVC
+endif()
+if(NOT merge_tool)
+    message(FATAL_ERROR "PxSteamDL install: no tool found to merge static libraries; configure with -DPXSTEAMDL_INSTALL=OFF")
 endif()
 add_custom_command(
     OUTPUT ${bundle_file}
