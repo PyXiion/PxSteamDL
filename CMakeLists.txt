@@ -3,6 +3,7 @@ project(PxSteamDL VERSION 0.2.0 LANGUAGES CXX)
 
 option(PXSTEAMDL_BUILD_CLI "Build the pxsteamdl command-line tool" ${PROJECT_IS_TOP_LEVEL})
 option(PXSTEAMDL_BUILD_PYTHON "Build the Python extension module" OFF)
+option(PXSTEAMDL_BUILD_TESTS "Build the unit tests (GoogleTest)" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -56,6 +57,7 @@ CPMAddPackage(
         "XZ_MICROLZMA_ENCODER OFF"
         "XZ_MICROLZMA_DECODER OFF"
         "XZ_DOC OFF"
+        "BUILD_TESTING OFF"
 )
 # xz exports its public headers only through the installed package config.
 target_include_directories(liblzma SYSTEM INTERFACE $<BUILD_INTERFACE:${xz_SOURCE_DIR}/src/liblzma/api>)
@@ -194,9 +196,9 @@ file(CONFIGURE OUTPUT ${ca_bundle_cpp} @ONLY CONTENT [[
 // Generated from cacert-@PXSTEAMDL_CA_BUNDLE_DATE@.pem by CMakeLists.txt.
 #include <cstddef>
 namespace pxsteamdl::detail {
-extern const unsigned char ca_bundle[] = {
+extern const unsigned char kCaBundle[] = {
 @ca_bundle_bytes@0x00};
-extern const std::size_t ca_bundle_size = sizeof(ca_bundle);
+extern const std::size_t kCaBundleSize = sizeof(kCaBundle);
 }
 ]])
 
@@ -211,11 +213,20 @@ function(pxsteamdl_warnings target)
 endfunction()
 
 add_library(pxsteamdl
+    src/cdn.cpp
+    src/chunk.cpp
     src/client.cpp
-    src/content.cpp
+    src/cm_packet.cpp
+    src/crypto.cpp
+    src/downloader.cpp
     src/http.cpp
+    src/manifest.cpp
+    src/paths.cpp
+    src/pending_file.cpp
     src/proto.cpp
     src/session.cpp
+    src/workshop.cpp
+    src/zip.cpp
     ${ca_bundle_cpp}
 )
 add_library(PxSteamDL::pxsteamdl ALIAS pxsteamdl)
@@ -266,4 +277,35 @@ if(PXSTEAMDL_BUILD_PYTHON)
     # dependency install rules out of the wheel.
     install(TARGETS _pxsteamdl LIBRARY DESTINATION pxsteamdl COMPONENT python)
     install(FILES ${CMAKE_CURRENT_BINARY_DIR}/_pxsteamdl.pyi DESTINATION pxsteamdl COMPONENT python)
+endif()
+
+if(PXSTEAMDL_BUILD_TESTS)
+    CPMAddPackage(
+        NAME googletest
+        VERSION 1.17.0
+        URL https://github.com/google/googletest/releases/download/v1.17.0/googletest-1.17.0.tar.gz
+        URL_HASH SHA256=65fab701d9829d38cb77c14acdc431d2108bfdbf8979e40eb8ae567edf10b27c
+        EXCLUDE_FROM_ALL YES
+        SYSTEM YES
+        OPTIONS "BUILD_GMOCK OFF" "INSTALL_GTEST OFF" "gtest_force_shared_crt ON"
+    )
+    enable_testing()
+    include(GoogleTest)
+
+    # Unit tests of the internal modules (src/*.hpp); they need no network.
+    add_executable(pxsteamdl-tests
+        tests/chunk_test.cpp
+        tests/cm_packet_test.cpp
+        tests/crypto_test.cpp
+        tests/manifest_test.cpp
+        tests/paths_test.cpp
+        tests/proto_test.cpp
+        tests/zip_test.cpp
+    )
+    target_include_directories(pxsteamdl-tests PRIVATE src)
+    target_link_libraries(pxsteamdl-tests
+        PRIVATE PxSteamDL::pxsteamdl GTest::gtest_main ZLIB::ZLIB MbedTLS::mbedcrypto
+    )
+    pxsteamdl_warnings(pxsteamdl-tests)
+    gtest_discover_tests(pxsteamdl-tests)
 endif()

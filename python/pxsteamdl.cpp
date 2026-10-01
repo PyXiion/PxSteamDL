@@ -17,15 +17,12 @@ namespace {
 using ProgressCallback = nb::typed<nb::callable, void(const pxsteamdl::Progress&)>;
 using ResolvedCallback = nb::typed<nb::callable, void(const pxsteamdl::ItemInfo&)>;
 
-std::vector<pxsteamdl::Result> download(pxsteamdl::Client& client, const std::vector<std::uint64_t>& ids,
-                                        const std::filesystem::path& root, int parallel_items,
-                                        int threads_per_item, std::optional<ProgressCallback> on_progress,
-                                        std::optional<ResolvedCallback> on_resolved,
-                                        const std::stop_source* cancel) {
-    if (parallel_items < 1)
-        throw nb::value_error("parallel_items must be >= 1");
-    if (threads_per_item < 1)
-        throw nb::value_error("threads_per_item must be >= 1");
+std::vector<pxsteamdl::Result> Download(pxsteamdl::Client& client, const std::vector<std::uint64_t>& ids,
+                                        const std::filesystem::path& root, int parallel_items, int threads_per_item,
+                                        std::optional<ProgressCallback> on_progress,
+                                        std::optional<ResolvedCallback> on_resolved, const std::stop_source* cancel) {
+    if (parallel_items < 1) throw nb::value_error("parallel_items must be >= 1");
+    if (threads_per_item < 1) throw nb::value_error("threads_per_item must be >= 1");
 
     pxsteamdl::Options options;
     options.parallel_items = static_cast<unsigned>(parallel_items);
@@ -56,10 +53,10 @@ std::vector<pxsteamdl::Result> download(pxsteamdl::Client& client, const std::ve
     }
 
     nb::gil_scoped_release release;
-    return client.download(ids, root, options);
+    return client.Download(ids, root, options);
 }
 
-} // namespace
+}  // namespace
 
 NB_MODULE(_pxsteamdl, m) {
     m.doc() = "Anonymous Steam Workshop downloader (RimWorld).";
@@ -74,7 +71,8 @@ NB_MODULE(_pxsteamdl, m) {
                 .format(p.item_id, p.title, p.bytes_done, p.bytes_total);
         });
 
-    nb::class_<pxsteamdl::ItemInfo>(m, "ItemInfo", "What Steam says about an item, known before any bytes are downloaded.")
+    nb::class_<pxsteamdl::ItemInfo>(m, "ItemInfo",
+                                    "What Steam says about an item, known before any bytes are downloaded.")
         .def_ro("item_id", &pxsteamdl::ItemInfo::item_id)
         .def_ro("title", &pxsteamdl::ItemInfo::title)
         .def_ro("error", &pxsteamdl::ItemInfo::error,
@@ -106,9 +104,8 @@ NB_MODULE(_pxsteamdl, m) {
                                   "Anonymous Steam session. Thread-safe: one client may serve several threads.")
         .def(nb::init<>(), nb::call_guard<nb::gil_scoped_release>(),
              "Logs in to Steam anonymously; raises RuntimeError on failure.")
-        .def("download", &download, "ids"_a, "root"_a, nb::kw_only(), "parallel_items"_a = 2,
-             "threads_per_item"_a = 4, "on_progress"_a = nb::none(), "on_resolved"_a = nb::none(),
-             "cancel"_a.none() = nb::none(),
+        .def("download", &Download, "ids"_a, "root"_a, nb::kw_only(), "parallel_items"_a = 2, "threads_per_item"_a = 4,
+             "on_progress"_a = nb::none(), "on_resolved"_a = nb::none(), "cancel"_a.none() = nb::none(),
              "Downloads each item into root/<item id>/, updating existing copies incrementally.\n\n"
              "Per-item failures are reported in Result.error. on_resolved(info) is called once per item on the\n"
              "calling thread after each batch of up to 100 items is answered by Steam, before any bytes are\n"

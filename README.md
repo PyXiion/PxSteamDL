@@ -42,6 +42,9 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
+To build and run the unit tests, add `-DPXSTEAMDL_BUILD_TESTS=ON` and run `ctest --test-dir build`; see
+[CONTRIBUTING.md](CONTRIBUTING.md), which also describes the code style.
+
 ## CLI
 
 ```sh
@@ -65,13 +68,13 @@ std::vector<std::uint64_t> ids{2009463077, 818773962};
 pxsteamdl::Options options;
 options.on_resolved = [](const pxsteamdl::ItemInfo& i) { /* title known, no bytes yet; called on this thread */ };
 options.on_progress = [](const pxsteamdl::Progress& p) { /* called from worker threads */ };
-for (const auto& r : client.download(ids, "mods", options))
+for (const auto& r : client.Download(ids, "mods", options))
     if (!r.error.empty()) std::fprintf(stderr, "%llu: %s\n", (unsigned long long)r.item_id, r.error.c_str());
 ```
 
 To cancel, pass a `std::stop_token` in `Options::stop`. Once stop is requested, in-flight chunk requests finish,
 the remaining work is skipped and every unfinished item reports `Result::error == "cancelled"`; items that already
-completed stay successful and `download()` returns normally. As with failures, temporary files are removed and the
+completed stay successful and `Download()` returns normally. As with failures, temporary files are removed and the
 existing files of unfinished items are not replaced.
 
 ```cpp

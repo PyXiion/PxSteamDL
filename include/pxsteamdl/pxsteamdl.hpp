@@ -46,13 +46,13 @@ struct Options {
     unsigned parallel_items = 2;
     // Chunk downloads share one pool of parallel_items * threads_per_item workers across all items.
     unsigned threads_per_item = 4;
-    // Called on the download() thread once per item, after each batch of up to 100 items has been answered by Steam
+    // Called on the Download() thread once per item, after each batch of up to 100 items has been answered by Steam
     // (not during the HTTP request) and before any bytes are downloaded.
     std::function<void(const ItemInfo&)> on_resolved;
     // Called from worker threads.
     std::function<void(const Progress&)> on_progress;
     // Cancellation: once stop is requested, in-flight chunk requests finish, remaining work is skipped and every
-    // unfinished item reports Result::error == "cancelled"; completed items stay ok and download() returns normally.
+    // unfinished item reports Result::error == "cancelled"; completed items stay ok and Download() returns normally.
     // As with failures, temporary files are removed and existing files of unfinished items are not replaced.
     std::stop_token stop;
 };
@@ -67,11 +67,11 @@ public:
 
     // Downloads each item into root/<item id>/, updating existing copies incrementally.
     // Per-item failures are reported in Result::error; thread-safe.
-    std::vector<Result> download(std::span<const std::uint64_t> item_ids,
-                                 const std::filesystem::path& root, const Options& options = {});
+    std::vector<Result> Download(std::span<const std::uint64_t> item_ids, const std::filesystem::path& root,
+                                 const Options& options = {});
 
 private:
     std::unique_ptr<detail::Session> session_;
 };
 
-} // namespace pxsteamdl
+}  // namespace pxsteamdl
