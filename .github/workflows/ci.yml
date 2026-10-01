@@ -1,12 +1,15 @@
 name: CI
 
 # Pull requests are checked by the pull_request event; push covers main only, so a PR commit runs once and tags
-# (built by the Release workflow) do not rerun CI.
+# (built by the Release workflow) do not rerun CI. The smoke tests download real items, so a failure may be Steam's
+# and not the code's: a run on main every day shows whether main itself is fine.
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  schedule:
+    - cron: "17 5 * * *"
 
 # A new push to a PR supersedes its running check; every commit on main keeps its own run.
 concurrency:

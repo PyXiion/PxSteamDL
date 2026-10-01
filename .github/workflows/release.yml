@@ -18,6 +18,29 @@ permissions:
   contents: write
 
 jobs:
+  check:
+    name: Check the version
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.publish && inputs.tag_name != '')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # A release is tagged vX.Y.Z, with X.Y.Z in project(PxSteamDL VERSION ...) and a section in CHANGELOG.md.
+      - name: Tag, version and changelog agree
+        shell: bash
+        env:
+          TAG: ${{ github.event.inputs.tag_name || github.ref_name }}
+        run: |
+          expected=$(sed -n 's/^project(PxSteamDL VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          if [ "$TAG" != "v$expected" ]; then
+            echo "::error::Tag $TAG does not match the version $expected in CMakeLists.txt"
+            exit 1
+          fi
+          if ! grep -q "^## \[$expected\] - " CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no section for $expected"
+            exit 1
+          fi
+
   binaries:
     name: binary (${{ matrix.os }})
     strategy:
@@ -145,11 +168,22 @@ jobs:
   release:
     name: Publish Release
     if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.publish && inputs.tag_name != '')
-    needs: [binaries, wheels, sdist]
+    needs: [check, binaries, wheels, sdist]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
+
+      # The release notes are the changelog section of this version.
+      - name: Release notes
+        shell: bash
+        run: |
+          version=$(sed -n 's/^project(PxSteamDL VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          awk -v v="$version" '$0 ~ "^## \\[" v "\\]" {found=1; next} found && /^## \[/ {exit} found {print}' CHANGELOG.md > release-notes.md
+          test -s release-notes.md
+          cat release-notes.md
+
       - uses: actions/download-artifact@v8
         with:
           path: release_assets
@@ -168,4 +202,4 @@ jobs:
         with:
           tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
           files: release_assets/*
-          generate_release_notes: true
+          body_path: release-notes.md
