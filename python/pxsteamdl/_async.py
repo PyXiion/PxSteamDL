@@ -39,7 +39,7 @@ class AsyncClient:
         """Downloads each item into root/<item id>/, like Client.download.
 
         on_progress and on_resolved are called on the event loop thread; on_resolved fires once per item as soon
-        as its title is known, before any bytes are downloaded. If the task is cancelled, the download is
+        as its title is known, before that item's bytes are downloaded. If the task is cancelled, the download is
         stopped and awaited (temporary files removed, finished items kept) before CancelledError propagates.
         """
         loop = asyncio.get_running_loop()

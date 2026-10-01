@@ -1,0 +1,50 @@
+name: Update CA bundle
+
+# The Mozilla CA bundle that curl publishes is compiled into the library, and CMakeLists.txt pins its date and hash.
+# Once a week this looks for a newer one and opens a pull request that pins it. Binaries built from an old pin would
+# eventually stop trusting Steam's certificates.
+#
+# Needs "Allow GitHub Actions to create and approve pull requests" in the repository's Actions settings.
+on:
+  schedule:
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Look for a newer bundle
+        id: bundle
+        run: .github/scripts/update-ca-bundle.sh
+
+      - name: Open a pull request
+        if: steps.bundle.outputs.date != ''
+        env:
+          DATE: ${{ steps.bundle.outputs.date }}
+        run: |
+          branch="ci/ca-bundle-$DATE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit -am "Update the Mozilla CA bundle to $DATE"
+          git push origin "$branch"
+          gh pr create --base "${{ github.event.repository.default_branch }}" --head "$branch" \
+            --title "Update the Mozilla CA bundle to $DATE" \
+            --body "Pins the newest CA bundle published by curl (https://curl.se/docs/caextract.html), as extracted on $DATE. Opened by the *Update CA bundle* workflow."
+          # Pull requests opened with the workflow token do not start CI by themselves; a manual run does.
+          gh workflow run ci.yml --ref "$branch"
+          # An older, unmerged update is obsolete now.
+          for number in $(gh pr list --state open --search 'in:title "Update the Mozilla CA bundle"' \
+                          --json number,headRefName --jq ".[] | select(.headRefName != \"$branch\") | .number"); do
+            gh pr close "$number" --comment "Superseded by $branch." --delete-branch
+          done

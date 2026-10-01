@@ -3,11 +3,18 @@ project(PxSteamDL VERSION 0.2.0 LANGUAGES CXX)
 
 option(PXSTEAMDL_BUILD_CLI "Build the pxsteamdl command-line tool" ${PROJECT_IS_TOP_LEVEL})
 option(PXSTEAMDL_BUILD_PYTHON "Build the Python extension module" OFF)
+option(PXSTEAMDL_BUILD_TESTS "Build the unit tests (GoogleTest)" OFF)
+option(PXSTEAMDL_INSTALL "Generate install rules: headers, one library with its dependencies merged in, find_package files" ${PROJECT_IS_TOP_LEVEL})
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+include(GNUInstallDirs)
+
+# <pxsteamdl/version.hpp>, from the version above; the single source of the version (the Python package reads it too).
+configure_file(cmake/version.hpp.in ${CMAKE_CURRENT_BINARY_DIR}/include/pxsteamdl/version.hpp @ONLY)
 
 # All dependencies are built from source as static libraries (the Python module links them too, hence PIC).
 # CPM's find_package redirection is off: curl locates mbedTLS/zstd/zlib through the variables set below.
@@ -56,6 +63,7 @@ CPMAddPackage(
         "XZ_MICROLZMA_ENCODER OFF"
         "XZ_MICROLZMA_DECODER OFF"
         "XZ_DOC OFF"
+        "BUILD_TESTING OFF"
 )
 # xz exports its public headers only through the installed package config.
 target_include_directories(liblzma SYSTEM INTERFACE $<BUILD_INTERFACE:${xz_SOURCE_DIR}/src/liblzma/api>)
@@ -194,9 +202,9 @@ file(CONFIGURE OUTPUT ${ca_bundle_cpp} @ONLY CONTENT [[
 // Generated from cacert-@PXSTEAMDL_CA_BUNDLE_DATE@.pem by CMakeLists.txt.
 #include <cstddef>
 namespace pxsteamdl::detail {
-extern const unsigned char ca_bundle[] = {
+extern const unsigned char kCaBundle[] = {
 @ca_bundle_bytes@0x00};
-extern const std::size_t ca_bundle_size = sizeof(ca_bundle);
+extern const std::size_t kCaBundleSize = sizeof(kCaBundle);
 }
 ]])
 
@@ -210,16 +218,39 @@ function(pxsteamdl_warnings target)
     endif()
 endfunction()
 
-add_library(pxsteamdl
+# Everything but the three files that talk to the outside world (HTTP, the CM session, pauses). The unit tests build
+# these sources against fakes of those three instead (tests/fakes), so the whole download pipeline runs offline.
+set(PXSTEAMDL_CORE_SOURCES
+    src/cdn.cpp
+    src/chunk.cpp
     src/client.cpp
-    src/content.cpp
-    src/http.cpp
+    src/cm_packet.cpp
+    src/crypto.cpp
+    src/downloader.cpp
+    src/eresult.cpp
+    src/manifest.cpp
+    src/paths.cpp
+    src/pending_file.cpp
     src/proto.cpp
+    src/retry.cpp
+    src/version.cpp
+    src/workshop.cpp
+    src/zip.cpp
+)
+add_library(pxsteamdl
+    ${PXSTEAMDL_CORE_SOURCES}
+    src/http.cpp
     src/session.cpp
+    src/sleep.cpp
     ${ca_bundle_cpp}
 )
 add_library(PxSteamDL::pxsteamdl ALIAS pxsteamdl)
-target_include_directories(pxsteamdl PUBLIC include PRIVATE src)
+target_include_directories(pxsteamdl
+    PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+           $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>
+           $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    PRIVATE src
+)
 target_link_libraries(pxsteamdl
     PRIVATE CURL::libcurl MbedTLS::mbedcrypto ZLIB::ZLIB liblzma libzstd_static nlohmann_json::nlohmann_json
     PUBLIC Threads::Threads
@@ -266,4 +297,60 @@ if(PXSTEAMDL_BUILD_PYTHON)
     # dependency install rules out of the wheel.
     install(TARGETS _pxsteamdl LIBRARY DESTINATION pxsteamdl COMPONENT python)
     install(FILES ${CMAKE_CURRENT_BINARY_DIR}/_pxsteamdl.pyi DESTINATION pxsteamdl COMPONENT python)
+endif()
+
+if(PXSTEAMDL_BUILD_TESTS)
+    CPMAddPackage(
+        NAME googletest
+        VERSION 1.17.0
+        URL https://github.com/google/googletest/releases/download/v1.17.0/googletest-1.17.0.tar.gz
+        URL_HASH SHA256=65fab701d9829d38cb77c14acdc431d2108bfdbf8979e40eb8ae567edf10b27c
+        EXCLUDE_FROM_ALL YES
+        SYSTEM YES
+        OPTIONS "BUILD_GMOCK OFF" "INSTALL_GTEST OFF" "gtest_force_shared_crt ON"
+    )
+    enable_testing()
+    include(GoogleTest)
+
+    # Unit tests of the internal modules (src/*.hpp). They build the core sources again, with fakes in place of
+    # src/http.cpp, src/session.cpp and src/sleep.cpp, so they need no network and no waiting.
+    add_executable(pxsteamdl-tests
+        ${PXSTEAMDL_CORE_SOURCES}
+        tests/fakes/fake_http.cpp
+        tests/fakes/fake_session.cpp
+        tests/fakes/fake_sleep.cpp
+        tests/fake_steam.cpp
+        tests/chunk_test.cpp
+        tests/client_test.cpp
+        tests/cm_packet_test.cpp
+        tests/crypto_test.cpp
+        tests/eresult_test.cpp
+        tests/manifest_test.cpp
+        tests/paths_test.cpp
+        tests/proto_test.cpp
+        tests/retry_test.cpp
+        tests/version_test.cpp
+        tests/zip_test.cpp
+    )
+    target_include_directories(pxsteamdl-tests PRIVATE src tests tests/fakes include ${CMAKE_CURRENT_BINARY_DIR}/include)
+    target_link_libraries(pxsteamdl-tests
+        PRIVATE GTest::gtest_main ZLIB::ZLIB MbedTLS::mbedcrypto liblzma libzstd_static nlohmann_json::nlohmann_json
+                Threads::Threads
+    )
+    if(WIN32)
+        target_compile_definitions(pxsteamdl-tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    endif()
+    pxsteamdl_warnings(pxsteamdl-tests)
+    gtest_discover_tests(pxsteamdl-tests)
+
+    # The real SleepFor(), which the fake above replaces.
+    add_executable(pxsteamdl-sleep-tests src/sleep.cpp tests/sleep_test.cpp)
+    target_include_directories(pxsteamdl-sleep-tests PRIVATE src)
+    target_link_libraries(pxsteamdl-sleep-tests PRIVATE GTest::gtest_main Threads::Threads)
+    pxsteamdl_warnings(pxsteamdl-sleep-tests)
+    gtest_discover_tests(pxsteamdl-sleep-tests)
+endif()
+
+if(PXSTEAMDL_INSTALL)
+    include(cmake/PxSteamDLInstall.cmake)
 endif()

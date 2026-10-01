@@ -42,11 +42,16 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
+To build and run the unit tests, add `-DPXSTEAMDL_BUILD_TESTS=ON` and run `ctest --test-dir build`; see
+[CONTRIBUTING.md](CONTRIBUTING.md), which also describes the code style.
+
 ## CLI
 
 ```sh
 pxsteamdl [-o DIR] [-j PARALLEL_ITEMS] [-t THREADS_PER_ITEM] ITEM_ID...
 ```
+
+`pxsteamdl --version` prints the version.
 
 Each item goes into `DIR/<ITEM_ID>/`, which matches steamcmd's `steamapps/workshop/content/294100/<ITEM_ID>`.
 The exit code is 1 if any item fails.
@@ -80,7 +85,26 @@ options.stop = stop.get_token();
 // from another thread: stop.request_stop();
 ```
 
-Link against the `PxSteamDL::pxsteamdl` CMake target (e.g. after `add_subdirectory` or `CPMAddPackage`).
+`pxsteamdl::Version()` returns the version of the library, and `PXSTEAMDL_VERSION_MAJOR`, `_MINOR`, `_PATCH` and
+`_STRING` (from `<pxsteamdl/version.hpp>`, included by the main header) that of the headers; in Python it is
+`pxsteamdl.__version__`.
+
+Link against the `PxSteamDL::pxsteamdl` CMake target, after `add_subdirectory` or `CPMAddPackage`, or against an
+installed copy:
+
+```sh
+cmake --install build --prefix /some/prefix
+```
+
+```cmake
+find_package(PxSteamDL 1.0 CONFIG REQUIRED)  # with -DCMAKE_PREFIX_PATH=/some/prefix
+target_link_libraries(app PRIVATE PxSteamDL::pxsteamdl)
+```
+
+The installed library is a single static archive that already contains curl, mbedTLS, zlib, liblzma and zstd, so
+nothing but the system libraries is needed to link it. (Before 1.0, a new minor version may change the API, so
+`find_package` accepts only a version with the same minor number.) The install also contains the CLI (`bin/pxsteamdl`).
+Single-configuration generators only.
 The CLI executable is built as `build/pxsteamdl`.
 
 ## Python
@@ -101,7 +125,7 @@ client = pxsteamdl.Client()  # anonymous logon; raises RuntimeError on failure
 def on_progress(p: pxsteamdl.Progress) -> None:  # called from worker threads
     print(f"{p.item_id} {p.title}: {p.bytes_done}/{p.bytes_total}")
 
-def on_resolved(i: pxsteamdl.ItemInfo) -> None:  # once per item, before any bytes; same thread as download()
+def on_resolved(i: pxsteamdl.ItemInfo) -> None:  # once per item, before its bytes; same thread as download()
     print(f"queued {i.item_id}: {i.title}" if not i.error else f"{i.item_id}: {i.error}")
 
 for r in client.download([2009463077, 818773962], "mods", on_progress=on_progress, on_resolved=on_resolved):
@@ -147,7 +171,13 @@ asyncio.run(main())
   represent faithfully (containing `:` or other reserved characters, device names such as `CON`, trailing dots or spaces) fail the item.
 - Symlinks from the manifest are recreated as symlinks. Windows allows creating them only with Developer Mode enabled
   or with administrator rights; otherwise an item that contains symlinks fails with an error saying so.
-- A failed item is reported in `Result::error` and does not stop the other items in the batch.
+- Transient failures (HTTP 429 and 5xx, network errors, Steam answering busy, timed out or rate limited) are retried up
+  to four times with growing pauses (about 0.5 s, 1 s, 2 s); a CDN download also pauses before it tries the next host.
+  Permanent failures (404, a rejected depot key, a corrupt chunk) are not retried, and a stop request ends a pause at once.
+- Item details are looked up in batches of 100 while earlier items download: each item is queued as soon as its
+  batch is answered. A failed details request fails only the items of its batch.
+- A failed item is reported in `Result::error` and does not stop the other items in the batch. Steam's result codes
+  are spelled out, e.g. `Steam rejected the item: not found (EResult 9)`.
 
 ## License
 

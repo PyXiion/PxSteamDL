@@ -33,6 +33,7 @@ regex = 'project\(PxSteamDL VERSION (?P<value>[0-9.]+)'
 [tool.scikit-build.cmake.define]
 PXSTEAMDL_BUILD_PYTHON = "ON"
 PXSTEAMDL_BUILD_CLI = "OFF"
+PXSTEAMDL_INSTALL = "OFF"
 
 [tool.cibuildwheel]
 build = "cp310-* cp311-* cp312-* cp313-* cp314-*"

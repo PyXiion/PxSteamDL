@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
+# find_package(PxSteamDL) support: defines the imported target PxSteamDL::pxsteamdl.
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(Threads)
+
+if(NOT TARGET PxSteamDL::pxsteamdl)
+    # One archive holds the library together with curl, mbedTLS, zlib, liblzma and zstd.
+    add_library(PxSteamDL::pxsteamdl STATIC IMPORTED)
+    set_target_properties(PxSteamDL::pxsteamdl PROPERTIES
+        IMPORTED_LINK_INTERFACE_LANGUAGES CXX
+        IMPORTED_LOCATION "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_LIBDIR@/@PXSTEAMDL_BUNDLE_NAME@"
+        INTERFACE_INCLUDE_DIRECTORIES "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_INCLUDEDIR@"
+        INTERFACE_COMPILE_FEATURES cxx_std_20
+        INTERFACE_LINK_LIBRARIES "@PXSTEAMDL_INTERFACE_LINK_LIBRARIES@"
+    )
+endif()
