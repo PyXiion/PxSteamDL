@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
+# Merges static libraries into one: cmake -DTOOL=<ar, libtool or lib> -DMSVC=<0|1> -DAPPLE=<0|1> -DOUTPUT=<file>
+# "-DINPUTS=<a|b|c>" -P MergeArchives.cmake
+string(REPLACE "|" ";" inputs "${INPUTS}")
+file(REMOVE "${OUTPUT}")
+get_filename_component(output_dir "${OUTPUT}" DIRECTORY)
+file(MAKE_DIRECTORY "${output_dir}")
+
+if(MSVC)
+    set(command "${TOOL}" /nologo "/OUT:${OUTPUT}" ${inputs})
+    set(input_file "")
+elseif(APPLE)
+    set(command "${TOOL}" -static -o "${OUTPUT}" ${inputs})
+    set(input_file "")
+else()
+    # GNU ar and llvm-ar read a script ("MRI") that adds the members of each archive.
+    set(script "CREATE ${OUTPUT}\n")
+    foreach(input IN LISTS inputs)
+        string(APPEND script "ADDLIB ${input}\n")
+    endforeach()
+    string(APPEND script "SAVE\nEND\n")
+    set(input_file "${OUTPUT}.mri")
+    file(WRITE "${input_file}" "${script}")
+    set(command "${TOOL}" -M)
+endif()
+
+if(input_file)
+    execute_process(COMMAND ${command} INPUT_FILE "${input_file}" RESULT_VARIABLE result ERROR_VARIABLE error)
+else()
+    execute_process(COMMAND ${command} RESULT_VARIABLE result ERROR_VARIABLE error)
+endif()
+if(NOT result EQUAL 0 OR NOT EXISTS "${OUTPUT}")
+    message(FATAL_ERROR "Merging the archives failed (${result}): ${error}")
+endif()

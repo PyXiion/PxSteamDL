@@ -58,6 +58,17 @@ jobs:
         if: runner.os == 'Linux'
         run: clang-tidy-18 -p build --quiet src/*.cpp cli/main.cpp tests/*.cpp tests/fakes/*.cpp
 
+      # The installed package must be complete: a separate project builds against it with find_package.
+      - name: Install and use as a package
+        run: |
+          cmake --install build --prefix "$RUNNER_TEMP/prefix"
+          cmake -S tests/install_consumer -B "$RUNNER_TEMP/consumer" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/prefix"
+          cmake --build "$RUNNER_TEMP/consumer"
+          expected=$(sed -n 's/^project(PxSteamDL VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          test "$("$RUNNER_TEMP/consumer/consumer" | tr -d '\r')" = "$expected"
+          "$RUNNER_TEMP/prefix/bin/pxsteamdl" --version
+
       - name: Binary size
         run: |
           exe=build/pxsteamdl${{ runner.os == 'Windows' && '.exe' || '' }}

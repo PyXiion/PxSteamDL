@@ -89,7 +89,22 @@ options.stop = stop.get_token();
 `_STRING` (from `<pxsteamdl/version.hpp>`, included by the main header) that of the headers; in Python it is
 `pxsteamdl.__version__`.
 
-Link against the `PxSteamDL::pxsteamdl` CMake target (e.g. after `add_subdirectory` or `CPMAddPackage`).
+Link against the `PxSteamDL::pxsteamdl` CMake target, after `add_subdirectory` or `CPMAddPackage`, or against an
+installed copy:
+
+```sh
+cmake --install build --prefix /some/prefix
+```
+
+```cmake
+find_package(PxSteamDL 1.0 CONFIG REQUIRED)  # with -DCMAKE_PREFIX_PATH=/some/prefix
+target_link_libraries(app PRIVATE PxSteamDL::pxsteamdl)
+```
+
+The installed library is a single static archive that already contains curl, mbedTLS, zlib, liblzma and zstd, so
+nothing but the system libraries is needed to link it. (Before 1.0, a new minor version may change the API, so
+`find_package` accepts only a version with the same minor number.) The install also contains the CLI (`bin/pxsteamdl`).
+Single-configuration generators only.
 The CLI executable is built as `build/pxsteamdl`.
 
 ## Python
