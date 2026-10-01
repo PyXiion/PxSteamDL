@@ -171,6 +171,9 @@ asyncio.run(main())
   represent faithfully (containing `:` or other reserved characters, device names such as `CON`, trailing dots or spaces) fail the item.
 - Symlinks from the manifest are recreated as symlinks. Windows allows creating them only with Developer Mode enabled
   or with administrator rights; otherwise an item that contains symlinks fails with an error saying so.
+- Transient failures (HTTP 429 and 5xx, network errors, Steam answering busy, timed out or rate limited) are retried up
+  to four times with growing pauses (about 0.5 s, 1 s, 2 s); a CDN download also pauses before it tries the next host.
+  Permanent failures (404, a rejected depot key, a corrupt chunk) are not retried, and a stop request ends a pause at once.
 - Item details are looked up in batches of 100 while earlier items download: each item is queued as soon as its
   batch is answered. A failed details request fails only the items of its batch.
 - A failed item is reported in `Result::error` and does not stop the other items in the batch. Steam's result codes
