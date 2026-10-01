@@ -162,6 +162,12 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
+## Examples
+
+Complete programs that use the whole API are in [`examples/`](examples): `download.cpp` (C++; built with
+`-DPXSTEAMDL_BUILD_EXAMPLES=ON`), `download.py` (synchronous Python) and `download_async.py` (asyncio). Each takes a
+directory and item IDs.
+
 ## Behaviour
 
 - Updates are incremental: a file whose size and SHA-1 already match the manifest is not downloaded again. Files and directories that are not in the manifest are deleted, as steamcmd does.

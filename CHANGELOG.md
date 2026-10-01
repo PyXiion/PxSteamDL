@@ -8,6 +8,7 @@ as described in [CONTRIBUTING.md](CONTRIBUTING.md#versioning).
 
 ### Added
 
+- `examples/`: programs using the whole C++, Python and asyncio API.
 - `pxsteamdl::Version()`, the `PXSTEAMDL_VERSION_*` macros (`<pxsteamdl/version.hpp>`), `pxsteamdl --version` and
   `pxsteamdl.__version__`.
 - `cmake --install` and `find_package(PxSteamDL)`: headers, the CLI, and one static archive that already contains

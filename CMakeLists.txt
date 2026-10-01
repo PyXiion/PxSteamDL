@@ -4,6 +4,7 @@ project(PxSteamDL VERSION 0.2.0 LANGUAGES CXX)
 option(PXSTEAMDL_BUILD_CLI "Build the pxsteamdl command-line tool" ${PROJECT_IS_TOP_LEVEL})
 option(PXSTEAMDL_BUILD_PYTHON "Build the Python extension module" OFF)
 option(PXSTEAMDL_BUILD_TESTS "Build the unit tests (GoogleTest)" OFF)
+option(PXSTEAMDL_BUILD_EXAMPLES "Build the programs in examples/" OFF)
 option(PXSTEAMDL_INSTALL "Generate install rules: headers, one library with its dependencies merged in, find_package files" ${PROJECT_IS_TOP_LEVEL})
 
 set(CMAKE_CXX_STANDARD 20)
@@ -297,6 +298,11 @@ if(PXSTEAMDL_BUILD_PYTHON)
     # dependency install rules out of the wheel.
     install(TARGETS _pxsteamdl LIBRARY DESTINATION pxsteamdl COMPONENT python)
     install(FILES ${CMAKE_CURRENT_BINARY_DIR}/_pxsteamdl.pyi DESTINATION pxsteamdl COMPONENT python)
+endif()
+
+if(PXSTEAMDL_BUILD_EXAMPLES)
+    add_executable(example-download examples/download.cpp)
+    target_link_libraries(example-download PRIVATE pxsteamdl)
 endif()
 
 if(PXSTEAMDL_BUILD_TESTS)
