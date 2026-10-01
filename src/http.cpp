@@ -56,6 +56,26 @@ std::size_t AppendBody(char* data, std::size_t size, std::size_t count, void* us
   return size * count;
 }
 
+// Failures of the network or of the server's TLS endpoint, as opposed to a bad request or an untrusted certificate.
+bool IsTransientCurlCode(CURLcode code) {
+  switch (code) {
+    case CURLE_COULDNT_RESOLVE_PROXY:
+    case CURLE_COULDNT_RESOLVE_HOST:
+    case CURLE_COULDNT_CONNECT:
+    case CURLE_PARTIAL_FILE:
+    case CURLE_OPERATION_TIMEDOUT:
+    case CURLE_GOT_NOTHING:
+    case CURLE_SEND_ERROR:
+    case CURLE_RECV_ERROR:
+    case CURLE_SSL_CONNECT_ERROR:
+    case CURLE_HTTP2:
+    case CURLE_HTTP2_STREAM:
+      return true;
+    default:
+      return false;
+  }
+}
+
 }  // namespace
 
 void SetCaBundle(CURL* curl) {
@@ -104,7 +124,10 @@ HttpResponse HttpRequest(std::string_view url, std::string_view method, std::str
 
   CURLcode status = curl_easy_perform(curl);
   if (status != CURLE_OK) {
-    Fail(method_string + " " + url_string + " failed: " + (error[0] ? error : curl_easy_strerror(status)));
+    std::string message =
+        method_string + " " + url_string + " failed: " + (error[0] ? error : curl_easy_strerror(status));
+    if (IsTransientCurlCode(status)) FailTransient(message);
+    Fail(message);
   }
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response.status);
   return response;

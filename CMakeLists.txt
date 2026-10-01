@@ -212,7 +212,9 @@ function(pxsteamdl_warnings target)
     endif()
 endfunction()
 
-add_library(pxsteamdl
+# Everything but the three files that talk to the outside world (HTTP, the CM session, pauses). The unit tests build
+# these sources against fakes of those three instead (tests/fakes), so the whole download pipeline runs offline.
+set(PXSTEAMDL_CORE_SOURCES
     src/cdn.cpp
     src/chunk.cpp
     src/client.cpp
@@ -220,14 +222,19 @@ add_library(pxsteamdl
     src/crypto.cpp
     src/downloader.cpp
     src/eresult.cpp
-    src/http.cpp
     src/manifest.cpp
     src/paths.cpp
     src/pending_file.cpp
     src/proto.cpp
-    src/session.cpp
+    src/retry.cpp
     src/workshop.cpp
     src/zip.cpp
+)
+add_library(pxsteamdl
+    ${PXSTEAMDL_CORE_SOURCES}
+    src/http.cpp
+    src/session.cpp
+    src/sleep.cpp
     ${ca_bundle_cpp}
 )
 add_library(PxSteamDL::pxsteamdl ALIAS pxsteamdl)
@@ -293,21 +300,40 @@ if(PXSTEAMDL_BUILD_TESTS)
     enable_testing()
     include(GoogleTest)
 
-    # Unit tests of the internal modules (src/*.hpp); they need no network.
+    # Unit tests of the internal modules (src/*.hpp). They build the core sources again, with fakes in place of
+    # src/http.cpp, src/session.cpp and src/sleep.cpp, so they need no network and no waiting.
     add_executable(pxsteamdl-tests
+        ${PXSTEAMDL_CORE_SOURCES}
+        tests/fakes/fake_http.cpp
+        tests/fakes/fake_session.cpp
+        tests/fakes/fake_sleep.cpp
+        tests/fake_steam.cpp
         tests/chunk_test.cpp
+        tests/client_test.cpp
         tests/cm_packet_test.cpp
         tests/crypto_test.cpp
         tests/eresult_test.cpp
         tests/manifest_test.cpp
         tests/paths_test.cpp
         tests/proto_test.cpp
+        tests/retry_test.cpp
         tests/zip_test.cpp
     )
-    target_include_directories(pxsteamdl-tests PRIVATE src)
+    target_include_directories(pxsteamdl-tests PRIVATE src tests tests/fakes include)
     target_link_libraries(pxsteamdl-tests
-        PRIVATE PxSteamDL::pxsteamdl GTest::gtest_main ZLIB::ZLIB MbedTLS::mbedcrypto
+        PRIVATE GTest::gtest_main ZLIB::ZLIB MbedTLS::mbedcrypto liblzma libzstd_static nlohmann_json::nlohmann_json
+                Threads::Threads
     )
+    if(WIN32)
+        target_compile_definitions(pxsteamdl-tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    endif()
     pxsteamdl_warnings(pxsteamdl-tests)
     gtest_discover_tests(pxsteamdl-tests)
+
+    # The real SleepFor(), which the fake above replaces.
+    add_executable(pxsteamdl-sleep-tests src/sleep.cpp tests/sleep_test.cpp)
+    target_include_directories(pxsteamdl-sleep-tests PRIVATE src)
+    target_link_libraries(pxsteamdl-sleep-tests PRIVATE GTest::gtest_main Threads::Threads)
+    pxsteamdl_warnings(pxsteamdl-sleep-tests)
+    gtest_discover_tests(pxsteamdl-sleep-tests)
 endif()

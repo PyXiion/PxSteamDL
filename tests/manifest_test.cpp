@@ -8,13 +8,13 @@
 #include <gtest/gtest.h>
 #include <mbedtls/base64.h>
 
-#include "proto.hpp"
-#include "test_util.hpp"
+#include "depot_builder.hpp"
 
 namespace pxsteamdl::detail {
 namespace {
 
-using testing::MakeZip;
+using testing::BuildManifest;
+using testing::ManifestEntry;
 using testing::SymmetricEncrypt;
 using testing::TestKey;
 using testing::ToBytes;
@@ -22,45 +22,25 @@ using testing::ToBytes;
 constexpr std::uint32_t kDepot = 294100;
 constexpr std::uint64_t kManifestId = 1234567890123ULL;
 
-Bytes EncodeFixed32(std::uint32_t field, std::uint32_t value) {
-  Bytes out{static_cast<std::uint8_t>((field << 3) | 5)};
-  AppendLe32(out, value);
-  return out;
+ManifestChunk MakeChunk(std::uint8_t sha_byte, std::uint64_t offset, std::uint32_t size) {
+  ManifestChunk chunk;
+  chunk.sha.fill(sha_byte);
+  chunk.checksum = 0xABCD;
+  chunk.offset = offset;
+  chunk.original_size = size;
+  chunk.compressed_size = 64;
+  return chunk;
 }
 
-Bytes Chunk(std::uint8_t sha_byte, std::uint64_t offset, std::uint32_t size) {
-  return Concat({EncodeBytes(1, Bytes(20, sha_byte)), EncodeFixed32(2, 0xABCD), EncodeUint(3, offset),
-                 EncodeUint(4, size), EncodeUint(5, 64)});
-}
-
-Bytes File(const std::string& name, std::uint64_t size, std::uint32_t flags, const std::vector<Bytes>& chunks) {
-  Bytes file = Concat({EncodeString(1, name), EncodeUint(2, size), EncodeUint(3, flags), EncodeBytes(5, Bytes(20, 1))});
-  for (const Bytes& chunk : chunks) {
-    Bytes field = EncodeBytes(6, chunk);
-    file.insert(file.end(), field.begin(), field.end());
-  }
-  return file;
-}
-
-void AppendSection(Bytes& out, std::uint32_t magic, const Bytes& section) {
-  AppendLe32(out, magic);
-  AppendLe32(out, static_cast<std::uint32_t>(section.size()));
-  out.insert(out.end(), section.begin(), section.end());
-}
-
-Bytes Manifest(const std::vector<Bytes>& files, bool encrypted = false, std::uint32_t depot = kDepot) {
-  Bytes payload;
-  for (const Bytes& file : files) {
-    Bytes field = EncodeBytes(1, file);
-    payload.insert(payload.end(), field.begin(), field.end());
-  }
-  Bytes binary;
-  AppendSection(binary, 0x71f617d0, payload);
-  AppendSection(binary, 0x1f4812be,
-                Concat({EncodeUint(1, depot), EncodeUint(2, kManifestId), EncodeUint(4, encrypted ? 1 : 0)}));
-  AppendSection(binary, 0x1b81b817, {});
-  AppendLe32(binary, 0x32c415ab);
-  return MakeZip(binary, true);
+ManifestEntry MakeFile(const std::string& name, std::uint64_t size, std::uint32_t flags,
+                       std::vector<ManifestChunk> chunks) {
+  ManifestEntry entry;
+  entry.name = name;
+  entry.size = size;
+  entry.flags = flags;
+  entry.sha.fill(1);
+  entry.chunks = std::move(chunks);
+  return entry;
 }
 
 std::string EncryptName(const std::string& name) {
@@ -73,13 +53,19 @@ std::string EncryptName(const std::string& name) {
   return base64;
 }
 
+std::vector<ManifestFile> Parse(const Bytes& zip, std::uint64_t manifest_id = kManifestId) {
+  return ParseManifest(zip, TestKey(), kDepot, manifest_id);
+}
+
 TEST(ManifestTest, ParsesFilesAndSortsChunks) {
-  Bytes zip = Manifest({
-      File("About\\About.xml", 30, 0, {Chunk(2, 10, 20), Chunk(3, 0, 10)}),
-      File("Textures", 0, depot_file_flag::kDirectory, {}),
-      File("run.sh", 0, depot_file_flag::kExecutable, {}),
-  });
-  std::vector<ManifestFile> files = ParseManifest(zip, TestKey(), kDepot, kManifestId);
+  Bytes zip = BuildManifest(
+      {
+          MakeFile("About\\About.xml", 30, 0, {MakeChunk(2, 10, 20), MakeChunk(3, 0, 10)}),
+          MakeFile("Textures", 0, depot_file_flag::kDirectory, {}),
+          MakeFile("run.sh", 0, depot_file_flag::kExecutable, {}),
+      },
+      kDepot, kManifestId);
+  std::vector<ManifestFile> files = Parse(zip);
   ASSERT_EQ(files.size(), 3u);
 
   EXPECT_EQ(files[0].name, "About/About.xml");
@@ -96,35 +82,43 @@ TEST(ManifestTest, ParsesFilesAndSortsChunks) {
   EXPECT_TRUE(files[2].isExecutable());
 }
 
+TEST(ManifestTest, ParsesSymlinks) {
+  ManifestEntry link = MakeFile("current", 0, depot_file_flag::kSymlink, {});
+  link.link_target = "versions\\1.5";
+  std::vector<ManifestFile> files = Parse(BuildManifest({link}, kDepot, kManifestId));
+  ASSERT_EQ(files.size(), 1u);
+  EXPECT_TRUE(files[0].isSymlink());
+  EXPECT_EQ(files[0].link_target, "versions/1.5");
+}
+
 TEST(ManifestTest, DecryptsNames) {
-  Bytes zip = Manifest({File(EncryptName("Defs/Things.xml"), 0, 0, {})}, true);
-  std::vector<ManifestFile> files = ParseManifest(zip, TestKey(), kDepot, kManifestId);
+  Bytes zip = BuildManifest({MakeFile(EncryptName("Defs/Things.xml"), 0, 0, {})}, kDepot, kManifestId, true);
+  std::vector<ManifestFile> files = Parse(zip);
   ASSERT_EQ(files.size(), 1u);
   EXPECT_EQ(files[0].name, "Defs/Things.xml");
 }
 
 TEST(ManifestTest, RejectsOtherDepotOrManifest) {
-  Bytes zip = Manifest({File("a", 0, 0, {})}, false, kDepot + 1);
-  EXPECT_THROW(ParseManifest(zip, TestKey(), kDepot, kManifestId), std::runtime_error);
-  EXPECT_THROW(ParseManifest(Manifest({File("a", 0, 0, {})}), TestKey(), kDepot, kManifestId + 1), std::runtime_error);
+  EXPECT_THROW(Parse(BuildManifest({MakeFile("a", 0, 0, {})}, kDepot + 1, kManifestId)), std::runtime_error);
+  EXPECT_THROW(Parse(BuildManifest({MakeFile("a", 0, 0, {})}, kDepot, kManifestId), kManifestId + 1),
+               std::runtime_error);
 }
 
 TEST(ManifestTest, RejectsChunksThatDoNotCoverFile) {
-  EXPECT_THROW(ParseManifest(Manifest({File("gap", 30, 0, {Chunk(1, 0, 10), Chunk(2, 11, 19)})}), TestKey(), kDepot,
-                             kManifestId),
-               std::runtime_error);
-  EXPECT_THROW(ParseManifest(Manifest({File("short", 30, 0, {Chunk(1, 0, 10)})}), TestKey(), kDepot, kManifestId),
+  EXPECT_THROW(
+      Parse(BuildManifest({MakeFile("gap", 30, 0, {MakeChunk(1, 0, 10), MakeChunk(2, 11, 19)})}, kDepot, kManifestId)),
+      std::runtime_error);
+  EXPECT_THROW(Parse(BuildManifest({MakeFile("short", 30, 0, {MakeChunk(1, 0, 10)})}, kDepot, kManifestId)),
                std::runtime_error);
 }
 
 TEST(ManifestTest, RejectsUnsafePath) {
-  EXPECT_THROW(ParseManifest(Manifest({File("../escape", 0, 0, {})}), TestKey(), kDepot, kManifestId),
-               std::runtime_error);
+  EXPECT_THROW(Parse(BuildManifest({MakeFile("../escape", 0, 0, {})}, kDepot, kManifestId)), std::runtime_error);
 }
 
 TEST(ManifestTest, RejectsDirectoryWithChunks) {
-  EXPECT_THROW(ParseManifest(Manifest({File("dir", 10, depot_file_flag::kDirectory, {Chunk(1, 0, 10)})}), TestKey(),
-                             kDepot, kManifestId),
+  EXPECT_THROW(Parse(BuildManifest({MakeFile("dir", 10, depot_file_flag::kDirectory, {MakeChunk(1, 0, 10)})}, kDepot,
+                                   kManifestId)),
                std::runtime_error);
 }
 

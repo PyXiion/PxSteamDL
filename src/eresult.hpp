@@ -76,4 +76,11 @@ std::string_view EResultDescription(std::int64_t code);
 // The description with the code, e.g. "not found (EResult 9)".
 std::string DescribeEResult(std::int64_t code);
 
+// Whether Steam may answer differently a little later: it is busy, rate-limiting us, or the connection broke.
+bool IsTransientEResult(std::int64_t code);
+
+// Throws "<what>: <description> (EResult N)", with detail in parentheses if it is not empty: a TransientError if the
+// code is transient, a std::runtime_error otherwise.
+[[noreturn]] void FailEResult(const std::string& what, std::int64_t code, std::string_view detail = {});
+
 }  // namespace pxsteamdl::detail

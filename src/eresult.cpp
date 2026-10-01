@@ -3,6 +3,8 @@
 
 #include <cstdint>
 
+#include "common.hpp"
+
 namespace pxsteamdl::detail {
 
 std::string_view EResultDescription(std::int64_t code) {
@@ -122,6 +124,34 @@ std::string_view EResultDescription(std::int64_t code) {
       return "network send limit exceeded";
   }
   return "unknown result";
+}
+
+bool IsTransientEResult(std::int64_t code) {
+  if (code < INT32_MIN || code > INT32_MAX) return false;
+  switch (static_cast<EResult>(code)) {
+    case EResult::kNoConnection:
+    case EResult::kBusy:
+    case EResult::kTimeout:
+    case EResult::kServiceUnavailable:
+    case EResult::kConnectFailed:
+    case EResult::kHandshakeFailed:
+    case EResult::kIoFailure:
+    case EResult::kRemoteDisconnect:
+    case EResult::kServiceReadOnly:
+    case EResult::kTryAnotherCm:
+    case EResult::kRateLimitExceeded:
+    case EResult::kTooManyPending:
+      return true;
+    default:
+      return false;
+  }
+}
+
+void FailEResult(const std::string& what, std::int64_t code, std::string_view detail) {
+  std::string message = what + ": " + DescribeEResult(code);
+  if (!detail.empty()) message += " (" + std::string(detail) + ")";
+  if (IsTransientEResult(code)) FailTransient(message);
+  Fail(message);
 }
 
 std::string DescribeEResult(std::int64_t code) {

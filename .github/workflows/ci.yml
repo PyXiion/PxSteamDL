@@ -52,11 +52,11 @@ jobs:
       # Style (see CONTRIBUTING.md): formatting and naming, checked once with pinned LLVM 18 tools.
       - name: clang-format
         if: runner.os == 'Linux'
-        run: clang-format-18 --dry-run --Werror src/*.cpp src/*.hpp include/pxsteamdl/*.hpp cli/main.cpp python/pxsteamdl.cpp tests/*.cpp tests/*.hpp
+        run: clang-format-18 --dry-run --Werror src/*.cpp src/*.hpp include/pxsteamdl/*.hpp cli/main.cpp python/pxsteamdl.cpp tests/*.cpp tests/*.hpp tests/fakes/*.?pp
 
       - name: clang-tidy
         if: runner.os == 'Linux'
-        run: clang-tidy-18 -p build --quiet src/*.cpp cli/main.cpp tests/*.cpp
+        run: clang-tidy-18 -p build --quiet src/*.cpp cli/main.cpp tests/*.cpp tests/fakes/*.cpp
 
       - name: Binary size
         run: |

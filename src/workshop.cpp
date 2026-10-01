@@ -13,6 +13,7 @@
 #include "common.hpp"
 #include "eresult.hpp"
 #include "http.hpp"
+#include "retry.hpp"
 
 namespace pxsteamdl::detail {
 
@@ -77,10 +78,15 @@ std::string DetailsForm(std::span<const std::uint64_t> ids) {
   return form;
 }
 
-// Fetches the details of up to kBatchSize items; returns one Item per ID, in order. Throws if the request fails.
-std::vector<Item> FetchBatch(std::span<const std::uint64_t> ids) {
-  HttpResponse response = HttpRequest(kDetailsUrl, "POST", DetailsForm(ids), "application/x-www-form-urlencoded");
-  if (response.status != 200) Fail("GetPublishedFileDetails: HTTP " + std::to_string(response.status));
+// Fetches the details of up to kBatchSize items; returns one Item per ID, in order. Throws if the request fails,
+// after retrying it if the failure looks transient.
+std::vector<Item> FetchBatch(std::span<const std::uint64_t> ids, const std::stop_token& stop) {
+  std::string form = DetailsForm(ids);
+  HttpResponse response = Retry(stop, [&] {
+    HttpResponse reply = HttpRequest(kDetailsUrl, "POST", form, "application/x-www-form-urlencoded");
+    CheckHttpStatus("GetPublishedFileDetails", reply.status);
+    return reply;
+  });
 
   auto root = nlohmann::json::parse(response.body.begin(), response.body.end());
   const auto& details = root.at("response").at("publishedfiledetails");
@@ -119,10 +125,12 @@ void FetchItems(std::span<const std::uint64_t> ids, const std::stop_token& stop,
       for (std::uint64_t id : batch) items.push_back(FailedItem(id, kCancelled));
     } else {
       try {
-        items = FetchBatch(batch);
+        items = FetchBatch(batch, stop);
       } catch (const std::exception& e) {
+        std::string error =
+            e.what() == std::string_view(kCancelled) ? kCancelled : std::string("item details: ") + e.what();
         items.clear();
-        for (std::uint64_t id : batch) items.push_back(FailedItem(id, std::string("item details: ") + e.what()));
+        for (std::uint64_t id : batch) items.push_back(FailedItem(id, error));
       }
     }
     for (Item& item : items) on_item(std::move(item));

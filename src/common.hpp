@@ -20,6 +20,14 @@ inline constexpr char kCancelled[] = "cancelled";
 
 [[noreturn]] inline void Fail(const std::string& message) { throw std::runtime_error(message); }
 
+// An error that may disappear on its own (a dropped connection, a busy server): worth retrying after a pause.
+class TransientError : public std::runtime_error {
+ public:
+  using std::runtime_error::runtime_error;
+};
+
+[[noreturn]] inline void FailTransient(const std::string& message) { throw TransientError(message); }
+
 inline ByteSpan AsBytes(std::string_view text) {
   return {reinterpret_cast<const std::uint8_t*>(text.data()), text.size()};
 }

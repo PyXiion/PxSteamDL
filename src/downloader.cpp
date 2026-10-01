@@ -29,6 +29,7 @@
 #include "paths.hpp"
 #include "pending_file.hpp"
 #include "proto.hpp"
+#include "retry.hpp"
 
 namespace pxsteamdl::detail {
 
@@ -117,7 +118,7 @@ void CreateSymlink(const fs::path& root, const ManifestFile& file) {
 }
 
 // Downloads an item from before SteamPipe: a single file at a direct URL.
-void DownloadLegacy(const ItemJob& job) {
+void DownloadLegacy(const ItemJob& job, const std::stop_token& stop) {
   const Item& item = job.item;
   std::string filename = item.filename;
   std::replace(filename.begin(), filename.end(), '\\', '/');
@@ -126,8 +127,11 @@ void DownloadLegacy(const ItemJob& job) {
     Fail("legacy item has no safe filename");
   }
   CheckDestination(job.destination);
-  HttpResponse response = HttpRequest(item.file_url);
-  if (response.status != 200) Fail("legacy file: HTTP " + std::to_string(response.status));
+  HttpResponse response = Retry(stop, [&] {
+    HttpResponse reply = HttpRequest(item.file_url);
+    CheckHttpStatus("legacy file", reply.status);
+    return reply;
+  });
   ManifestFile legacy;
   legacy.name = ToUtf8(name);
   legacy.size = response.body.size();
@@ -209,6 +213,11 @@ class Downloader::Impl {
   AesKey depotKey(std::uint32_t depot, std::uint32_t app_id) {
     std::lock_guard lock(m_cacheMutex);
     if (auto it = m_keys.find(depot); it != m_keys.end()) return it->second;
+    AesKey key = Retry(m_stop, [&] { return requestDepotKey(depot, app_id); });
+    return m_keys.emplace(depot, key).first->second;
+  }
+
+  AesKey requestDepotKey(std::uint32_t depot, std::uint32_t app_id) {
     Bytes reply = m_session.request(emsg::kClientGetDepotDecryptionKey,
                                     Concat({EncodeUint(depot_key_field::kRequestDepotId, depot),
                                             EncodeUint(depot_key_field::kRequestAppId, app_id)}));
@@ -225,22 +234,22 @@ class Downloader::Impl {
         has_key = true;
       }
     }
-    if (eresult != kEResultOk) Fail("depot key request failed: " + DescribeEResult(eresult));
+    if (eresult != kEResultOk) FailEResult("depot key request failed", eresult);
     if (!has_key) Fail("depot key response lacks the key");
-    return m_keys.emplace(depot, key).first->second;
+    return key;
   }
 
   const std::vector<std::string>& cdnHosts(std::uint32_t app_id) {
     std::lock_guard lock(m_cacheMutex);
     if (auto it = m_hosts.find(app_id); it != m_hosts.end()) return it->second;
-    return m_hosts.emplace(app_id, FetchCdnHosts(app_id)).first->second;
+    return m_hosts.emplace(app_id, FetchCdnHosts(app_id, m_stop)).first->second;
   }
 
   std::uint64_t manifestRequestCode(const Item& item, std::uint32_t depot) {
-    Bytes reply = m_session.rpc(
-        kManifestRequestCodeMethod,
+    Bytes request =
         Concat({EncodeUint(request_code_field::kAppId, item.app_id), EncodeUint(request_code_field::kDepotId, depot),
-                EncodeUint(request_code_field::kManifestId, item.manifest_id)}));
+                EncodeUint(request_code_field::kManifestId, item.manifest_id)});
+    Bytes reply = Retry(m_stop, [&] { return m_session.rpc(kManifestRequestCodeMethod, request); });
     std::uint64_t code = 0;
     ProtoReader reader(reply);
     while (auto field = reader.next()) {
@@ -292,7 +301,7 @@ class Downloader::Impl {
     const Item& item = job.item;
     if (job.destination.empty()) Fail("download destination is empty");
     if (!item.file_url.empty() && item.manifest_id == 0) {
-      DownloadLegacy(job);
+      DownloadLegacy(job, m_stop);
       return false;
     }
     if (!item.manifest_id || !item.app_id) Fail("item has no SteamPipe manifest or app ID");

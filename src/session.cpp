@@ -24,6 +24,7 @@
 #include "eresult.hpp"
 #include "http.hpp"
 #include "proto.hpp"
+#include "retry.hpp"
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -109,8 +110,11 @@ ReceiveStatus Receive(CURL* curl, Bytes& partial, Bytes& message) {
 }
 
 std::vector<std::string> FetchCmEndpoints() {
-  HttpResponse response = HttpRequest(kCmListUrl);
-  if (response.status != 200) Fail("GetCMListForConnect: HTTP " + std::to_string(response.status));
+  HttpResponse response = Retry({}, [] {
+    HttpResponse reply = HttpRequest(kCmListUrl);
+    CheckHttpStatus("GetCMListForConnect", reply.status);
+    return reply;
+  });
   auto root = nlohmann::json::parse(response.body.begin(), response.body.end());
   const auto& servers = root.at("response").at("serverlist");
   if (!servers.is_array()) Fail("GetCMListForConnect: invalid serverlist");
@@ -178,7 +182,7 @@ class Session::Impl {
     {
       // Checked under m_jobsMutex so the job cannot be registered after the reader failed the pending ones.
       std::lock_guard lock(m_jobsMutex);
-      if (!m_connected) Fail("Session not connected");
+      if (!m_connected) FailTransient("Session not connected");
       future = m_pendingJobs[jobid].get_future();
     }
     auto forget = [&] {
@@ -197,7 +201,7 @@ class Session::Impl {
     }
     if (future.wait_for(kCallTimeout) == std::future_status::timeout) {
       forget();
-      Fail("Steam CM request timed out (EMsg " + std::to_string(emsg) + " " + std::string(job_name) + ")");
+      FailTransient("Steam CM request timed out (EMsg " + std::to_string(emsg) + " " + std::string(job_name) + ")");
     }
     return future.get();
   }
@@ -227,7 +231,7 @@ class Session::Impl {
       if (m_curl) curl_easy_cleanup(m_curl);
       m_curl = nullptr;
     }
-    Fail("Failed to connect to Steam CM: " + last_error);
+    FailTransient("Failed to connect to Steam CM: " + last_error);
   }
 
   // Logs off (if still connected), stops the threads and releases the socket. Requires m_connectMutex.
@@ -262,7 +266,7 @@ class Session::Impl {
     std::lock_guard lock(m_jobsMutex);
     bool was_connected = m_connected.exchange(false);
     for (auto& [id, promise] : m_pendingJobs) {
-      promise.set_exception(std::make_exception_ptr(std::runtime_error(reason)));
+      promise.set_exception(std::make_exception_ptr(TransientError(reason)));
     }
     m_pendingJobs.clear();
     return was_connected;
@@ -291,7 +295,7 @@ class Session::Impl {
     std::optional<Packet> response = awaitLogonResponse(handle);
     if (!response) return false;
     LogonResult result = ParseLogonResponse(*response);
-    if (result.eresult != kEResultOk) Fail("Logon failed: " + DescribeEResult(result.eresult));
+    if (result.eresult != kEResultOk) FailEResult("Logon failed", result.eresult);
 
     m_steamid = response->steamid;
     m_sessionid = response->sessionid;
@@ -326,17 +330,17 @@ class Session::Impl {
 
   void sendPacket(ByteSpan data) {
     std::lock_guard lock(m_ioMutex);
-    if (!m_curl) Fail("Session not connected");
+    if (!m_curl) FailTransient("Session not connected");
     curl_socket_t socket = ActiveSocket(m_curl);
     for (std::size_t offset = 0; offset < data.size();) {
       std::size_t sent = 0;
       CURLcode status = curl_ws_send(m_curl, data.data() + offset, data.size() - offset, &sent, 0, CURLWS_BINARY);
       if (status == CURLE_AGAIN) {
-        if (socket == CURL_SOCKET_BAD) Fail("curl socket unavailable for send");
-        if (!WaitSocket(socket, true, kSendPollTimeoutMs)) Fail("curl_ws_send poll timeout");
+        if (socket == CURL_SOCKET_BAD) FailTransient("curl socket unavailable for send");
+        if (!WaitSocket(socket, true, kSendPollTimeoutMs)) FailTransient("curl_ws_send poll timeout");
         continue;
       }
-      if (status != CURLE_OK) Fail(std::string("curl_ws_send failed: ") + curl_easy_strerror(status));
+      if (status != CURLE_OK) FailTransient(std::string("curl_ws_send failed: ") + curl_easy_strerror(status));
       offset += sent;
     }
   }
@@ -437,9 +441,7 @@ Bytes Session::rpc(std::string_view method, ByteSpan body) {
   connect();
   Packet response = m_impl->call(emsg::kServiceMethodCall, method, body);
   if (response.eresult != kEResultOk) {
-    std::string message = "RPC " + std::string(method) + " failed: " + DescribeEResult(response.eresult);
-    if (!response.error_message.empty()) message += " (" + response.error_message + ")";
-    Fail(message);
+    FailEResult("RPC " + std::string(method) + " failed", response.eresult, response.error_message);
   }
   return std::move(response.body);
 }

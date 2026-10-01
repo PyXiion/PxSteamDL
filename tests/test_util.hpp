@@ -3,9 +3,11 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <string_view>
 
+#include <gtest/gtest.h>
 #include <mbedtls/aes.h>
 #include <zlib.h>
 
@@ -15,6 +17,12 @@
 namespace pxsteamdl::detail::testing {
 
 inline Bytes ToBytes(std::string_view text) { return Bytes(text.begin(), text.end()); }
+
+// A backoff pause after some failures is between half of the full delay and all of it.
+inline void ExpectDelayBetween(std::chrono::milliseconds actual, std::chrono::milliseconds full) {
+  EXPECT_GE(actual, full / 2);
+  EXPECT_LE(actual, full);
+}
 
 inline void AppendLe16(Bytes& out, std::uint16_t value) {
   out.push_back(static_cast<std::uint8_t>(value));

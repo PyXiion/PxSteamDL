@@ -17,8 +17,8 @@ C++ follows the [Google C++ Style Guide](https://google.github.io/styleguide/cpp
 below. `.clang-format` and `.clang-tidy` encode the mechanical parts, and CI checks both:
 
 ```sh
-clang-format -i src/*.cpp src/*.hpp include/pxsteamdl/*.hpp cli/main.cpp python/pxsteamdl.cpp tests/*.cpp tests/*.hpp
-clang-tidy -p build src/*.cpp cli/main.cpp tests/*.cpp
+clang-format -i src/*.cpp src/*.hpp include/pxsteamdl/*.hpp cli/main.cpp python/pxsteamdl.cpp tests/*.cpp tests/*.hpp tests/fakes/*.?pp
+clang-tidy -p build src/*.cpp cli/main.cpp tests/*.cpp tests/fakes/*.cpp
 ```
 
 After changing a naming rule in `.clang-tidy`, `run-clang-tidy -p build -fix '/(src|cli|tests)/'` renames the
