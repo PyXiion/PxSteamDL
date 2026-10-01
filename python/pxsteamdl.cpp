@@ -72,12 +72,13 @@ NB_MODULE(_pxsteamdl, m) {
       });
 
   nb::class_<pxsteamdl::ItemInfo>(m, "ItemInfo",
-                                  "What Steam says about an item, known before any bytes are downloaded.")
+                                  "What Steam says about an item, known before the item's bytes are downloaded.")
       .def_ro("item_id", &pxsteamdl::ItemInfo::item_id)
       .def_ro("title", &pxsteamdl::ItemInfo::title)
       .def_ro("error", &pxsteamdl::ItemInfo::error,
               "Empty if Steam accepted the item; otherwise why it was rejected (not returned, non-success result\n"
-              "code, unusable details). Download failures are reported later, in Result.error.")
+              "code, unusable details, failed details request) or \"cancelled\". Download failures are reported\n"
+              "later, in Result.error.")
       .def("__repr__", [](const pxsteamdl::ItemInfo& i) {
         return nb::str("ItemInfo(item_id={}, title={!r}, error={!r})").format(i.item_id, i.title, i.error);
       });
@@ -108,8 +109,9 @@ NB_MODULE(_pxsteamdl, m) {
            "on_progress"_a = nb::none(), "on_resolved"_a = nb::none(), "cancel"_a.none() = nb::none(),
            "Downloads each item into root/<item id>/, updating existing copies incrementally.\n\n"
            "Per-item failures are reported in Result.error. on_resolved(info) is called once per item on the\n"
-           "calling thread after each batch of up to 100 items is answered by Steam, before any bytes are\n"
-           "downloaded; ItemInfo is Steam's verdict only, not a download outcome.\n"
+           "calling thread, in order, as soon as its batch of up to 100 items is answered by Steam and before\n"
+           "the item's bytes are downloaded; earlier items already download meanwhile. ItemInfo is Steam's\n"
+           "verdict only, not a download outcome.\n"
            "on_progress is called from worker\n"
            "threads; exceptions either callback raises are reported as unraisable and do not stop the download.\n"
            "After cancel.cancel(), in-flight chunk requests finish, remaining work is skipped and\n"

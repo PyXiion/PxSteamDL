@@ -72,6 +72,26 @@ jobs:
           ./build/pxsteamdl || status=$?
           test "$status" -eq 2
 
+      # Downloads real items from Steam. Not on Windows, where the download hangs on GitHub runners (under
+      # investigation).
+      - name: Smoke test
+        if: runner.os != 'Windows'
+        timeout-minutes: 10
+        run: |
+          mods="$RUNNER_TEMP/mods"
+          ./build/pxsteamdl -o "$mods" 2009463077 818773962
+          test -f "$mods/2009463077/About/About.xml"
+          test -f "$mods/818773962/About/About.xml"
+          # A damaged file must be replaced (rename over an existing file).
+          expected=$(cksum < "$mods/2009463077/About/About.xml")
+          echo damaged >> "$mods/2009463077/About/About.xml"
+          ./build/pxsteamdl -o "$mods" 2009463077
+          test "$(cksum < "$mods/2009463077/About/About.xml")" = "$expected"
+          # An unknown item fails alone, with exit code 1.
+          status=0
+          ./build/pxsteamdl -o "$mods" 2009463077 1 || status=$?
+          test "$status" -eq 1
+
   python:
     strategy:
       fail-fast: false
@@ -97,3 +117,8 @@ jobs:
 
       - name: Import check
         run: python -c "import pxsteamdl; print(pxsteamdl.Client, pxsteamdl.AsyncClient, pxsteamdl.CancelToken)"
+
+      - name: Smoke test
+        if: runner.os != 'Windows'
+        timeout-minutes: 10
+        run: python -u .github/smoke_test.py

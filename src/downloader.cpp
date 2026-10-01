@@ -7,10 +7,12 @@
 #include <cstddef>
 #include <deque>
 #include <exception>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <set>
+#include <stop_token>
 #include <system_error>
 #include <thread>
 #include <utility>
@@ -115,7 +117,7 @@ void CreateSymlink(const fs::path& root, const ManifestFile& file) {
 
 // Downloads an item from before SteamPipe: a single file at a direct URL.
 void DownloadLegacy(const ItemJob& job) {
-  const Item& item = *job.item;
+  const Item& item = job.item;
   std::string filename = item.filename;
   std::replace(filename.begin(), filename.end(), '\\', '/');
   fs::path name = Utf8Path(filename).filename();
@@ -140,7 +142,7 @@ struct ChunkTask {
   const ManifestChunk* chunk = nullptr;
 };
 
-// An item between planning and completion; owned by Downloader::m_states.
+// An item between planning and completion; owned by Downloader::Impl::m_states.
 struct ItemState {
   std::size_t index = 0;
   ItemJob* job = nullptr;
@@ -160,24 +162,46 @@ struct ItemState {
   std::string error;
 };
 
-// One download() call: planners resolve items into chunk tasks, a shared worker pool fetches chunks of all
-// items, so a large item keeps every worker busy instead of only its own share.
-class Downloader {
- public:
-  Downloader(Session& session, std::span<ItemJob> jobs, unsigned planners, unsigned workers, std::stop_token stop)
-      : m_session(session),
-        m_jobs(jobs),
-        m_states(jobs.size()),
-        m_planners(std::clamp<std::size_t>(planners, 1, jobs.size())),
-        m_workers(std::max(1u, workers)),
-        m_stop(std::move(stop)) {}
+}  // namespace
 
-  // Returns when every job has finished or failed.
-  void run() {
+// Planners resolve items into chunk tasks as they are added, and a shared worker pool fetches chunks of all items,
+// so a large item keeps every worker busy instead of only its own share.
+class Downloader::Impl {
+ public:
+  Impl(Session& session, std::size_t max_jobs, unsigned planners, unsigned workers, std::stop_token stop)
+      : m_session(session),
+        m_states(max_jobs),
+        m_planners(std::clamp<std::size_t>(planners, 1, std::max<std::size_t>(max_jobs, 1))),
+        m_workers(std::max(1u, workers)),
+        m_stopForward(stop, [this] { m_abort.request_stop(); }),
+        m_stop(m_abort.get_token()) {
     m_activePlanners = m_planners;
-    std::vector<std::jthread> threads;
-    for (std::size_t i = 0; i < m_workers; ++i) threads.emplace_back([this, i] { work(i); });
-    for (std::size_t i = 0; i < m_planners; ++i) threads.emplace_back([this, i] { planItems(i); });
+    for (std::size_t i = 0; i < m_workers; ++i) m_threads.emplace_back([this, i] { work(i); });
+    for (std::size_t i = 0; i < m_planners; ++i) m_threads.emplace_back([this, i] { planItems(i); });
+  }
+
+  ~Impl() {
+    if (!m_finished) {
+      m_abort.request_stop();
+      finish();
+    }
+  }
+
+  void add(ItemJob& job) {
+    std::lock_guard lock(m_queueMutex);
+    if (m_added + m_incoming.size() >= m_states.size()) Fail("Downloader: more jobs than announced");
+    m_incoming.push_back(&job);
+    m_planWake.notify_one();
+  }
+
+  void finish() {
+    {
+      std::lock_guard lock(m_queueMutex);
+      m_closed = true;
+      m_planWake.notify_all();
+    }
+    for (std::jthread& thread : m_threads) thread.join();
+    m_finished = true;
   }
 
  private:
@@ -224,19 +248,29 @@ class Downloader {
     return code;
   }
 
+  // Takes the next added job once fewer than kOpenItemsPerPlanner * m_planners items are open; nullptr once no
+  // more jobs follow.
+  ItemJob* nextJob(std::size_t& index) {
+    std::unique_lock lock(m_queueMutex);
+    m_planWake.wait(lock,
+                    [&] { return m_incoming.empty() ? m_closed : m_openItems < kOpenItemsPerPlanner * m_planners; });
+    if (m_incoming.empty()) return nullptr;
+    ItemJob* job = m_incoming.front();
+    m_incoming.pop_front();
+    index = m_added++;
+    ++m_openItems;
+    return job;
+  }
+
   void planItems(std::size_t planner) {
-    for (std::size_t i; (i = m_nextItem++) < m_jobs.size();) {
-      {
-        std::unique_lock lock(m_queueMutex);
-        m_itemSlotFree.wait(lock, [&] { return m_openItems < kOpenItemsPerPlanner * m_planners; });
-        ++m_openItems;
-      }
+    std::size_t index = 0;
+    while (ItemJob* job = nextJob(index)) {
       bool queued = false;
       try {
-        queued = plan(i, planner);
+        queued = plan(*job, index, planner);
       } catch (const std::exception& e) {
-        m_jobs[i].error = e.what();
-        m_states[i].reset();
+        job->error = e.what();
+        m_states[index].reset();
       }
       if (!queued) closeItem();
     }
@@ -247,14 +281,13 @@ class Downloader {
   void closeItem() {
     std::lock_guard lock(m_queueMutex);
     --m_openItems;
-    m_itemSlotFree.notify_all();
+    m_planWake.notify_all();
   }
 
   // Returns whether chunk tasks were queued; otherwise the item is already complete.
-  bool plan(std::size_t index, std::size_t planner) {
-    ItemJob& job = m_jobs[index];
+  bool plan(ItemJob& job, std::size_t index, std::size_t planner) {
     if (m_stop.stop_requested()) Fail(kCancelled);
-    const Item& item = *job.item;
+    const Item& item = job.item;
     if (job.destination.empty()) Fail("download destination is empty");
     if (!item.file_url.empty() && item.manifest_id == 0) {
       DownloadLegacy(job);
@@ -417,35 +450,47 @@ class Downloader {
   }
 
   Session& m_session;
-  std::span<ItemJob> m_jobs;
+  // Indexed in the order jobs are taken by planners.
   std::vector<std::unique_ptr<ItemState>> m_states;
   std::size_t m_planners;
   std::size_t m_workers;
+  // Stopped on the caller's request, or when the downloader is destroyed without finish().
+  std::stop_source m_abort;
+  std::stop_callback<std::function<void()>> m_stopForward;
   std::stop_token m_stop;
-  std::atomic<std::size_t> m_nextItem{0};
 
   std::mutex m_cacheMutex;  // guards m_keys and m_hosts
   std::map<std::uint32_t, AesKey> m_keys;
   std::map<std::uint32_t, std::vector<std::string>> m_hosts;
 
-  std::mutex m_queueMutex;
+  std::mutex m_queueMutex;  // guards everything below but the threads
+  std::condition_variable m_planWake;
   std::condition_variable m_queueReady;
-  std::condition_variable m_itemSlotFree;
+  // Added jobs no planner has taken yet.
+  std::deque<ItemJob*> m_incoming;
+  std::size_t m_added = 0;  // jobs taken by planners
+  bool m_closed = false;    // no more jobs follow
   // Items with chunks left to hand out. Workers rotate over the first m_planners of them, so parallel_items items
   // download side by side and the next one starts as soon as one of them has no chunks left, instead of queueing
   // behind every chunk of the others.
   std::deque<ItemState*> m_ready;
   std::size_t m_activePlanners = 0;
   std::size_t m_openItems = 0;  // planned but not finished; bounds open temporary files
+
+  bool m_finished = false;
+  // Last, so the threads are joined before the state they use is destroyed.
+  std::vector<std::jthread> m_threads;
 };
 
-}  // namespace
+Downloader::Downloader(Session& session, std::size_t max_jobs, unsigned parallel_items, unsigned threads_per_item,
+                       std::stop_token stop)
+    : m_impl(std::make_unique<Impl>(session, max_jobs, parallel_items,
+                                    std::max(1u, parallel_items) * std::max(1u, threads_per_item), std::move(stop))) {}
 
-void DownloadItems(Session& session, std::span<ItemJob> jobs, unsigned parallel_items, unsigned threads_per_item,
-                   std::stop_token stop) {
-  if (jobs.empty()) return;
-  unsigned workers = std::max(1u, parallel_items) * std::max(1u, threads_per_item);
-  Downloader(session, jobs, parallel_items, workers, std::move(stop)).run();
-}
+Downloader::~Downloader() = default;
+
+void Downloader::add(ItemJob& job) { m_impl->add(job); }
+
+void Downloader::finish() { m_impl->finish(); }
 
 }  // namespace pxsteamdl::detail

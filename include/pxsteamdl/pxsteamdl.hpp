@@ -24,12 +24,13 @@ struct Progress {
   std::string title;
 };
 
-// What Steam says about an item, known before any bytes are downloaded. Not an outcome: see Result.
+// What Steam says about an item, known before the item's bytes are downloaded. Not an outcome: see Result.
 struct ItemInfo {
   std::uint64_t item_id;
   std::string title;
   // Empty if Steam accepted the item. Otherwise why it was rejected (missing from the answer, a non-success
-  // result code, unusable details). Download failures come later, in Result::error.
+  // result code, unusable details, a failed details request) or "cancelled" if the download was stopped before the
+  // item was looked up. Download failures come later, in Result::error.
   std::string error;
 };
 
@@ -46,8 +47,9 @@ struct Options {
   unsigned parallel_items = 2;
   // Chunk downloads share one pool of parallel_items * threads_per_item workers across all items.
   unsigned threads_per_item = 4;
-  // Called on the download() thread once per item, after each batch of up to 100 items has been answered by Steam
-  // (not during the HTTP request) and before any bytes are downloaded.
+  // Called on the download() thread once per item, in order, as soon as its batch of up to 100 items has been
+  // answered by Steam (not during the HTTP request) and before that item's bytes are downloaded. Details are looked
+  // up while earlier items download, so on_progress calls for earlier items may come first.
   std::function<void(const ItemInfo&)> on_resolved;
   // Called from worker threads.
   std::function<void(const Progress&)> on_progress;

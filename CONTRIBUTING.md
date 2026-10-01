@@ -27,7 +27,8 @@ and has to be renamed by hand.
 
 ### Kept from the Google style
 
-- **Naming:** types and free functions `PascalCase`; methods `camelCase`; variables, parameters and struct
+- **Naming** (Google's, except for methods and data members): types and free functions `PascalCase`; methods
+  `camelCase`; variables, parameters and struct
   members `snake_case`; private and protected class data members `m_camelCase`; constants and enumerators
   `kPascalCase`; namespaces `snake_case`.
 - **One header per source file:** every `src/foo.cpp` has a `src/foo.hpp` declaring what other files use, and

@@ -6,6 +6,7 @@
 #include <exception>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 
 #include <nlohmann/json.hpp>
 
@@ -40,6 +41,13 @@ std::uint64_t U64Field(const nlohmann::json& entry, const char* key) {
   return it != entry.end() ? ParseU64(*it) : 0;
 }
 
+Item FailedItem(std::uint64_t id, std::string error) {
+  Item item;
+  item.id = id;
+  item.error = std::move(error);
+  return item;
+}
+
 // One publishedfiledetails entry; a malformed entry fails only its own item.
 Item ParseItem(std::uint64_t id, const nlohmann::json& entry) {
   Item item;
@@ -68,9 +76,8 @@ std::string DetailsForm(std::span<const std::uint64_t> ids) {
   return form;
 }
 
-// Fetches the details of up to kBatchSize items and appends one Item per ID to items.
-void FetchBatch(std::span<const std::uint64_t> ids, std::vector<Item>& items,
-                const std::function<void(const Item&)>& on_item) {
+// Fetches the details of up to kBatchSize items; returns one Item per ID, in order. Throws if the request fails.
+std::vector<Item> FetchBatch(std::span<const std::uint64_t> ids) {
   HttpResponse response = HttpRequest(kDetailsUrl, "POST", DetailsForm(ids), "application/x-www-form-urlencoded");
   if (response.status != 200) Fail("GetPublishedFileDetails: HTTP " + std::to_string(response.status));
 
@@ -88,27 +95,37 @@ void FetchBatch(std::span<const std::uint64_t> ids, std::vector<Item>& items,
       // An unparsable ID matches no request.
     }
   }
+  std::vector<Item> items;
+  items.reserve(ids.size());
   for (std::uint64_t id : ids) {
     if (auto found = by_id.find(id); found != by_id.end()) {
       items.push_back(ParseItem(id, *found->second));
     } else {
-      Item& item = items.emplace_back();
-      item.id = id;
-      item.error = "not returned by Steam";
+      items.push_back(FailedItem(id, "not returned by Steam"));
     }
-    if (on_item) on_item(items.back());
   }
+  return items;
 }
 
 }  // namespace
 
-std::vector<Item> FetchItems(std::span<const std::uint64_t> ids, const std::function<void(const Item&)>& on_item) {
-  std::vector<Item> items;
-  items.reserve(ids.size());
+void FetchItems(std::span<const std::uint64_t> ids, const std::stop_token& stop,
+                const std::function<void(Item)>& on_item) {
   for (std::size_t first = 0; first < ids.size(); first += kBatchSize) {
-    FetchBatch(ids.subspan(first, std::min(kBatchSize, ids.size() - first)), items, on_item);
+    std::span<const std::uint64_t> batch = ids.subspan(first, std::min(kBatchSize, ids.size() - first));
+    std::vector<Item> items;
+    if (stop.stop_requested()) {
+      for (std::uint64_t id : batch) items.push_back(FailedItem(id, kCancelled));
+    } else {
+      try {
+        items = FetchBatch(batch);
+      } catch (const std::exception& e) {
+        items.clear();
+        for (std::uint64_t id : batch) items.push_back(FailedItem(id, std::string("item details: ") + e.what()));
+      }
+    }
+    for (Item& item : items) on_item(std::move(item));
   }
-  return items;
 }
 
 }  // namespace pxsteamdl::detail

@@ -104,7 +104,7 @@ client = pxsteamdl.Client()  # anonymous logon; raises RuntimeError on failure
 def on_progress(p: pxsteamdl.Progress) -> None:  # called from worker threads
     print(f"{p.item_id} {p.title}: {p.bytes_done}/{p.bytes_total}")
 
-def on_resolved(i: pxsteamdl.ItemInfo) -> None:  # once per item, before any bytes; same thread as download()
+def on_resolved(i: pxsteamdl.ItemInfo) -> None:  # once per item, before its bytes; same thread as download()
     print(f"queued {i.item_id}: {i.title}" if not i.error else f"{i.item_id}: {i.error}")
 
 for r in client.download([2009463077, 818773962], "mods", on_progress=on_progress, on_resolved=on_resolved):
@@ -150,6 +150,8 @@ asyncio.run(main())
   represent faithfully (containing `:` or other reserved characters, device names such as `CON`, trailing dots or spaces) fail the item.
 - Symlinks from the manifest are recreated as symlinks. Windows allows creating them only with Developer Mode enabled
   or with administrator rights; otherwise an item that contains symlinks fails with an error saying so.
+- Item details are looked up in batches of 100 while earlier items download: each item is queued as soon as its
+  batch is answered. A failed details request fails only the items of its batch.
 - A failed item is reported in `Result::error` and does not stop the other items in the batch.
 
 ## License

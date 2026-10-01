@@ -5,8 +5,8 @@
 #include <cstdint>
 #include <functional>
 #include <span>
+#include <stop_token>
 #include <string>
-#include <vector>
 
 namespace pxsteamdl::detail {
 
@@ -23,8 +23,10 @@ struct Item {
   std::string error;
 };
 
-// Looks up the items in batches; returns one Item per ID, in order. A rejected item carries Item::error, a failed
-// request throws. on_item, if set, is called on the calling thread for each item as soon as its batch is resolved.
-std::vector<Item> FetchItems(std::span<const std::uint64_t> ids, const std::function<void(const Item&)>& on_item = {});
+// Looks up the items in batches of up to 100 and calls on_item on the calling thread for each item, in order, as soon
+// as its batch is answered. A rejected item carries Item::error, as does every item of a batch whose request failed.
+// Once stop is requested, the remaining items are not looked up and carry kCancelled.
+void FetchItems(std::span<const std::uint64_t> ids, const std::stop_token& stop,
+                const std::function<void(Item)>& on_item);
 
 }  // namespace pxsteamdl::detail
