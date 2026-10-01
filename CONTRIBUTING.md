@@ -21,11 +21,15 @@ clang-format -i src/*.cpp src/*.hpp include/pxsteamdl/*.hpp cli/main.cpp python/
 clang-tidy -p build src/*.cpp cli/main.cpp tests/*.cpp
 ```
 
+After changing a naming rule in `.clang-tidy`, `run-clang-tidy -p build -fix '/(src|cli|tests)/'` renames the
+identifiers and their uses across the code base; code under `#ifdef _WIN32` and `python/` is not compiled on Linux
+and has to be renamed by hand.
+
 ### Kept from the Google style
 
-- **Naming:** types and functions `PascalCase`; variables, parameters and struct members `snake_case`; class data
-  members `snake_case_` with a trailing underscore; constants and enumerators `kPascalCase`; namespaces `snake_case`.
-  Accessors may be named like the member they return (`file()`).
+- **Naming:** types and free functions `PascalCase`; methods `camelCase`; variables, parameters and struct
+  members `snake_case`; private and protected class data members `m_camelCase`; constants and enumerators
+  `kPascalCase`; namespaces `snake_case`.
 - **One header per source file:** every `src/foo.cpp` has a `src/foo.hpp` declaring what other files use, and
   everything else stays in an unnamed namespace.
 - **Include order:** the related header, C system headers, C++ standard headers, other libraries, project headers,
@@ -40,7 +44,7 @@ clang-tidy -p build src/*.cpp cli/main.cpp tests/*.cpp
 
 - **Exceptions are used** for errors (`std::runtime_error`, via `detail::Fail`), so per-item failures can unwind
   through the download pipeline.
-- **4-space indentation and 120 columns** instead of 2 and 80.
+- **120 columns** instead of 80 (indentation stays at 2 spaces).
 - **`#pragma once`** instead of `#define` guards; **`.hpp`/`.cpp`** extensions.
 - The **public API keeps snake_case fields** (`Options::parallel_items`), as Google style allows for structs, and
   the Python API follows PEP 8 (`Client.download`).

@@ -9,8 +9,8 @@
 namespace pxsteamdl::detail {
 
 struct HttpResponse {
-    long status = 0;
-    Bytes body;
+  long status = 0;
+  Bytes body;
 };
 
 // Performs a GET or POST request; throws on a transport error, not on an HTTP error status.

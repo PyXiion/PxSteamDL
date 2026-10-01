@@ -1,8 +1,8 @@
-# Google C++ style, lightened: 4-space indent, 120 columns (see CONTRIBUTING.md).
+# Google C++ style, lightened: 2-space indent, 120 columns (see CONTRIBUTING.md).
 BasedOnStyle: Google
-IndentWidth: 4
+IndentWidth: 2
 ColumnLimit: 120
-AccessModifierOffset: -4
+AccessModifierOffset: -1
 DerivePointerAlignment: false
 PointerAlignment: Left
 IncludeBlocks: Preserve

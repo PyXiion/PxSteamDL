@@ -27,17 +27,17 @@ inline constexpr std::uint64_t kNoJob = ~0ULL;
 
 // One CM packet: the CMsgProtoBufHeader fields used here and the message body.
 struct Packet {
-    std::uint32_t emsg = 0;
-    std::uint64_t steamid = 0;
-    std::int32_t sessionid = 0;
-    std::uint64_t jobid_source = kNoJob;
-    std::uint64_t jobid_target = kNoJob;
-    // Received only.
-    std::int32_t eresult = 0;
-    std::string target_job_name;
-    // Received only.
-    std::string error_message;
-    Bytes body;
+  std::uint32_t emsg = 0;
+  std::uint64_t steamid = 0;
+  std::int32_t sessionid = 0;
+  std::uint64_t jobid_source = kNoJob;
+  std::uint64_t jobid_target = kNoJob;
+  // Received only.
+  std::int32_t eresult = 0;
+  std::string target_job_name;
+  // Received only.
+  std::string error_message;
+  Bytes body;
 };
 
 // Encodes an outgoing packet: its EMsg, the header fields that are set, and the body.

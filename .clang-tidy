@@ -11,16 +11,14 @@ CheckOptions:
   readability-identifier-naming.TemplateParameterCase: CamelCase
   readability-identifier-naming.FunctionCase: CamelCase
   readability-identifier-naming.FunctionIgnoredRegexp: '^main$'
-  readability-identifier-naming.MethodCase: CamelCase
-  # Accessors may be named like the member they return.
-  readability-identifier-naming.MethodIgnoredRegexp: '^file$'
+  readability-identifier-naming.MethodCase: camelBack
   readability-identifier-naming.VariableCase: lower_case
   readability-identifier-naming.ParameterCase: lower_case
   readability-identifier-naming.MemberCase: lower_case
-  readability-identifier-naming.PrivateMemberCase: lower_case
-  readability-identifier-naming.PrivateMemberSuffix: '_'
-  readability-identifier-naming.ProtectedMemberCase: lower_case
-  readability-identifier-naming.ProtectedMemberSuffix: '_'
+  readability-identifier-naming.PrivateMemberCase: camelBack
+  readability-identifier-naming.PrivateMemberPrefix: 'm_'
+  readability-identifier-naming.ProtectedMemberCase: camelBack
+  readability-identifier-naming.ProtectedMemberPrefix: 'm_'
   readability-identifier-naming.ConstexprVariableCase: CamelCase
   readability-identifier-naming.ConstexprVariablePrefix: 'k'
   readability-identifier-naming.StaticConstantCase: CamelCase

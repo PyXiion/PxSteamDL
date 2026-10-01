@@ -13,38 +13,38 @@
 namespace pxsteamdl::detail {
 
 enum class WireType : std::uint32_t {
-    kVarint = 0,
-    kFixed64 = 1,
-    kLengthDelimited = 2,
-    kFixed32 = 5,
+  kVarint = 0,
+  kFixed64 = 1,
+  kLengthDelimited = 2,
+  kFixed32 = 5,
 };
 
 struct ProtoField {
-    std::uint32_t number = 0;
-    WireType wire_type = WireType::kVarint;
-    // Value of a varint or fixed-width field.
-    std::uint64_t integer = 0;
-    // Contents of a length-delimited field; points into the decoded input.
-    ByteSpan bytes;
+  std::uint32_t number = 0;
+  WireType wire_type = WireType::kVarint;
+  // Value of a varint or fixed-width field.
+  std::uint64_t integer = 0;
+  // Contents of a length-delimited field; points into the decoded input.
+  ByteSpan bytes;
 
-    bool Is(std::uint32_t field_number, WireType type) const { return number == field_number && wire_type == type; }
+  bool is(std::uint32_t field_number, WireType type) const { return number == field_number && wire_type == type; }
 };
 
 // Iterates over the fields of one encoded message.
 class ProtoReader {
-public:
-    explicit ProtoReader(ByteSpan input) : input_(input) {}
+ public:
+  explicit ProtoReader(ByteSpan input) : m_input(input) {}
 
-    // Returns the next field, or nullopt at the end of the input; throws on malformed input.
-    std::optional<ProtoField> Next();
+  // Returns the next field, or nullopt at the end of the input; throws on malformed input.
+  std::optional<ProtoField> next();
 
-private:
-    std::uint64_t ReadVarint();
-    std::uint64_t ReadFixed(std::size_t size);
-    ByteSpan Take(std::size_t size);
+ private:
+  std::uint64_t readVarint();
+  std::uint64_t readFixed(std::size_t size);
+  ByteSpan take(std::size_t size);
 
-    ByteSpan input_;
-    std::size_t offset_ = 0;
+  ByteSpan m_input;
+  std::size_t m_offset = 0;
 };
 
 Bytes EncodeUint(std::uint32_t field, std::uint64_t value);

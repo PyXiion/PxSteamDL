@@ -15,12 +15,12 @@
 namespace pxsteamdl::detail {
 
 struct ItemJob {
-    const Item* item = nullptr;
-    std::filesystem::path destination;
-    // Called with (bytes done, bytes total) from worker threads.
-    std::function<void(std::uint64_t, std::uint64_t)> progress;
-    // Set when the item fails.
-    std::string error;
+  const Item* item = nullptr;
+  std::filesystem::path destination;
+  // Called with (bytes done, bytes total) from worker threads.
+  std::function<void(std::uint64_t, std::uint64_t)> progress;
+  // Set when the item fails.
+  std::string error;
 };
 
 // Downloads all jobs: up to parallel_items items are resolved concurrently, and their chunks share a pool of

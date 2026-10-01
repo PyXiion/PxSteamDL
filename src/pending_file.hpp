@@ -27,33 +27,33 @@ bool IsUpToDate(const std::filesystem::path& path, const ManifestFile& file);
 // it are being written, so an item with thousands of changed files does not exhaust the descriptor limit.
 // Destroying an uncommitted PendingFile removes the temporary file.
 class PendingFile {
-public:
-    // Creates the temporary file at its final size; writes is the number of Write() calls that will follow.
-    PendingFile(const ManifestFile& source, std::filesystem::path destination, std::size_t writes);
-    ~PendingFile();
-    PendingFile(const PendingFile&) = delete;
-    PendingFile& operator=(const PendingFile&) = delete;
+ public:
+  // Creates the temporary file at its final size; writes is the number of write() calls that will follow.
+  PendingFile(const ManifestFile& source, std::filesystem::path destination, std::size_t writes);
+  ~PendingFile();
+  PendingFile(const PendingFile&) = delete;
+  PendingFile& operator=(const PendingFile&) = delete;
 
-    const ManifestFile& file() const { return file_; }
+  const ManifestFile& file() const { return m_file; }
 
-    // One of the writes announced to the constructor; safe to call concurrently for disjoint ranges.
-    // The file is opened by the first write and closed after the last one, whether or not it succeeded.
-    void Write(std::uint64_t offset, ByteSpan data);
+  // One of the writes announced to the constructor; safe to call concurrently for disjoint ranges.
+  // The file is opened by the first write and closed after the last one, whether or not it succeeded.
+  void write(std::uint64_t offset, ByteSpan data);
 
-    // Verifies the whole-file hash, then moves the temporary file over the final path. Call after all writes.
-    void Commit(std::filesystem::perms perms);
+  // Verifies the whole-file hash, then moves the temporary file over the final path. Call after all writes.
+  void commit(std::filesystem::perms perms);
 
-private:
-    // Counts a write as done and closes the file after the last one.
-    void FinishWrite();
-    void Discard();
+ private:
+  // Counts a write as done and closes the file after the last one.
+  void finishWrite();
+  void discard();
 
-    const ManifestFile& file_;
-    std::filesystem::path final_;
-    std::filesystem::path temp_;
-    std::mutex mutex_;  // guards opening and closing out_, and unwritten_
-    std::unique_ptr<NativeFile> out_;
-    std::size_t unwritten_;
+  const ManifestFile& m_file;
+  std::filesystem::path m_final;
+  std::filesystem::path m_temp;
+  std::mutex m_mutex;  // guards opening and closing m_out, and m_unwritten
+  std::unique_ptr<NativeFile> m_out;
+  std::size_t m_unwritten;
 };
 
 }  // namespace pxsteamdl::detail
