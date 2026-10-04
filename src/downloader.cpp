@@ -92,7 +92,7 @@ std::vector<std::string> SortByDepth(const std::set<std::string>& dirs) {
 }
 
 void CheckDestination(const fs::path& root) {
-  if (fs::is_symlink(fs::symlink_status(root))) Fail("destination must not be a symlink");
+  if (fs::is_symlink(fs::symlink_status(root))) Fail(ErrorKind::kFilesystem, "destination must not be a symlink");
   fs::create_directories(root);
 }
 
@@ -113,12 +113,12 @@ void CreateSymlink(const fs::path& root, const ManifestFile& file) {
 #ifdef _WIN32
     message += " (Windows allows symlinks only with Developer Mode enabled or as administrator)";
 #endif
-    Fail(message);
+    Fail(ErrorKind::kFilesystem, message);
   }
 }
 
 // Downloads an item from before SteamPipe: a single file at a direct URL.
-void DownloadLegacy(const ItemJob& job, const std::stop_token& stop) {
+void DownloadLegacy(ItemJob& job, const HttpConfig& config, const std::stop_token& stop) {
   const Item& item = job.item;
   std::string filename = item.filename;
   std::replace(filename.begin(), filename.end(), '\\', '/');
@@ -128,7 +128,7 @@ void DownloadLegacy(const ItemJob& job, const std::stop_token& stop) {
   }
   CheckDestination(job.destination);
   HttpResponse response = Retry(stop, [&] {
-    HttpResponse reply = HttpRequest(item.file_url);
+    HttpResponse reply = HttpRequest(item.file_url, config);
     CheckHttpStatus("legacy file", reply.status);
     return reply;
   });
@@ -139,7 +139,9 @@ void DownloadLegacy(const ItemJob& job, const std::stop_token& stop) {
   PendingFile output(legacy, job.destination / name, 1);
   output.write(0, response.body);
   output.commit(kRegularPerms);
-  if (job.progress) job.progress(legacy.size, legacy.size);
+  job.downloaded = response.body.size();
+  job.unpacked = legacy.size;
+  if (job.progress) job.progress({job.downloaded, job.downloaded, job.unpacked, job.unpacked});
 }
 
 struct ChunkTask {
@@ -161,10 +163,10 @@ struct ItemState {
   std::size_t next_chunk = 0;  // next to hand out; guarded by Downloader::m_queueMutex
   std::atomic<std::size_t> remaining{0};
   std::atomic<bool> failed{false};
-  std::mutex mutex;  // guards done, error and progress calls
-  std::uint64_t done = 0;
-  std::uint64_t total = 0;
+  std::mutex mutex;  // guards progress, error and the calls of the progress callback
+  JobProgress progress;
   std::string error;
+  ErrorKind error_kind = ErrorKind::kNone;
 };
 
 }  // namespace
@@ -194,7 +196,7 @@ class Downloader::Impl {
 
   void add(ItemJob& job) {
     std::lock_guard lock(m_queueMutex);
-    if (m_added + m_incoming.size() >= m_states.size()) Fail("Downloader: more jobs than announced");
+    if (m_added + m_incoming.size() >= m_states.size()) Fail(ErrorKind::kOther, "Downloader: more jobs than announced");
     m_incoming.push_back(&job);
     m_planWake.notify_one();
   }
@@ -242,7 +244,7 @@ class Downloader::Impl {
   const std::vector<std::string>& cdnHosts(std::uint32_t app_id) {
     std::lock_guard lock(m_cacheMutex);
     if (auto it = m_hosts.find(app_id); it != m_hosts.end()) return it->second;
-    return m_hosts.emplace(app_id, FetchCdnHosts(app_id, m_stop)).first->second;
+    return m_hosts.emplace(app_id, FetchCdnHosts(app_id, m_session.httpConfig(), m_stop)).first->second;
   }
 
   std::uint64_t manifestRequestCode(const Item& item, std::uint32_t depot) {
@@ -255,7 +257,7 @@ class Downloader::Impl {
     while (auto field = reader.next()) {
       if (field->is(request_code_field::kResponseCode, WireType::kVarint)) code = field->integer;
     }
-    if (!code) Fail("manifest request code is zero");
+    if (!code) Fail(ErrorKind::kRejected, "manifest request code is zero");
     return code;
   }
 
@@ -281,6 +283,7 @@ class Downloader::Impl {
         queued = plan(*job, index, planner);
       } catch (const std::exception& e) {
         job->error = e.what();
+        job->error_kind = KindOf(e);
         m_states[index].reset();
       }
       if (!queued) closeItem();
@@ -297,14 +300,14 @@ class Downloader::Impl {
 
   // Returns whether chunk tasks were queued; otherwise the item is already complete.
   bool plan(ItemJob& job, std::size_t index, std::size_t planner) {
-    if (m_stop.stop_requested()) Fail(kCancelled);
+    if (m_stop.stop_requested()) FailCancelled();
     const Item& item = job.item;
-    if (job.destination.empty()) Fail("download destination is empty");
+    if (job.destination.empty()) Fail(ErrorKind::kOther, "download destination is empty");
     if (!item.file_url.empty() && item.manifest_id == 0) {
-      DownloadLegacy(job, m_stop);
+      DownloadLegacy(job, m_session.httpConfig(), m_stop);
       return false;
     }
-    if (!item.manifest_id || !item.app_id) Fail("item has no SteamPipe manifest or app ID");
+    if (!item.manifest_id || !item.app_id) Fail(ErrorKind::kRejected, "item has no SteamPipe manifest or app ID");
 
     m_states[index] = std::make_unique<ItemState>();
     ItemState& state = *m_states[index];
@@ -315,11 +318,11 @@ class Downloader::Impl {
     queueChangedFiles(state);
 
     if (state.chunks.empty()) {
-      if (job.progress) job.progress(0, 0);
+      if (job.progress) job.progress({});
       finish(state);
       return false;
     }
-    if (m_stop.stop_requested()) Fail(kCancelled);
+    if (m_stop.stop_requested()) FailCancelled();
     state.remaining = state.chunks.size();
     std::lock_guard lock(m_queueMutex);
     m_ready.push_back(&state);
@@ -336,7 +339,7 @@ class Downloader::Impl {
     std::string path = "/depot/" + std::to_string(depot) + "/manifest/" + std::to_string(item.manifest_id) + "/" +
                        std::to_string(kManifestVersion) + "/" + std::to_string(code);
     std::size_t host = planner;
-    state.files = FetchFromCdn(*state.hosts, path, host, m_stop, [&](const Bytes& zip) {
+    state.files = FetchFromCdn(*state.hosts, path, host, m_session.httpConfig(), m_stop, [&](const Bytes& zip) {
       return ParseManifest(zip, state.key, depot, item.manifest_id);
     });
     state.chunk_prefix = "/depot/" + std::to_string(depot) + "/chunk/";
@@ -383,7 +386,8 @@ class Downloader::Impl {
       auto& output = state.pending.emplace_back(std::make_unique<PendingFile>(file, path, file.chunks.size()));
       for (const ManifestChunk& chunk : file.chunks) {
         state.chunks.push_back({output.get(), &chunk});
-        state.total += chunk.original_size;
+        state.progress.downloaded_total += chunk.compressed_size;
+        state.progress.unpacked_total += chunk.original_size;
       }
     }
   }
@@ -410,13 +414,17 @@ class Downloader::Impl {
       ItemState& state = *item;
       if (!state.failed) {
         try {
-          fetchChunk(state, task, host);
+          std::uint64_t downloaded = fetchChunk(state, task, host);
           std::lock_guard lock(state.mutex);
-          state.done += task.chunk->original_size;
-          if (state.job->progress) state.job->progress(state.done, state.total);
+          state.progress.downloaded += downloaded;
+          state.progress.unpacked += task.chunk->original_size;
+          if (state.job->progress) state.job->progress(state.progress);
         } catch (const std::exception& e) {
           std::lock_guard lock(state.mutex);
-          if (!state.failed) state.error = e.what();
+          if (!state.failed) {
+            state.error = e.what();
+            state.error_kind = KindOf(e);
+          }
           state.failed = true;
         }
       }
@@ -427,11 +435,17 @@ class Downloader::Impl {
     }
   }
 
-  void fetchChunk(const ItemState& state, const ChunkTask& task, std::size_t& host) const {
+  // Fetches, decodes and writes a chunk; returns the number of bytes that came over the network.
+  std::uint64_t fetchChunk(const ItemState& state, const ChunkTask& task, std::size_t& host) const {
     const ManifestChunk& chunk = *task.chunk;
-    Bytes data = FetchFromCdn(*state.hosts, state.chunk_prefix + ToHex(chunk.sha), host, m_stop,
-                              [&](const Bytes& body) { return DecodeChunk(body, state.key, chunk); });
+    std::uint64_t downloaded = 0;
+    Bytes data = FetchFromCdn(*state.hosts, state.chunk_prefix + ToHex(chunk.sha), host, m_session.httpConfig(), m_stop,
+                              [&](const Bytes& body) {
+                                downloaded = body.size();
+                                return DecodeChunk(body, state.key, chunk);
+                              });
     task.output->write(chunk.offset, data);  // a local write error is not worth retrying on another host
+    return downloaded;
   }
 
   // Runs on the thread that completed the item's last chunk (or its planner when nothing was needed).
@@ -441,10 +455,16 @@ class Downloader::Impl {
         finalize(state);
       } catch (const std::exception& e) {
         state.error = e.what();
+        state.error_kind = KindOf(e);
         state.failed = true;
       }
     }
-    if (state.failed) state.job->error = state.error;
+    state.job->downloaded = state.progress.downloaded;
+    state.job->unpacked = state.progress.unpacked;
+    if (state.failed) {
+      state.job->error = state.error;
+      state.job->error_kind = state.error_kind;
+    }
     m_states[state.index].reset();
   }
 

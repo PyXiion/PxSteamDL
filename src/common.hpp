@@ -4,11 +4,15 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <exception>
+#include <filesystem>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include "pxsteamdl/error.hpp"
 
 namespace pxsteamdl::detail {
 
@@ -18,15 +22,27 @@ using ByteSpan = std::span<const std::uint8_t>;
 // Result::error of an item stopped through Options::stop; part of the public contract.
 inline constexpr char kCancelled[] = "cancelled";
 
-[[noreturn]] inline void Fail(const std::string& message) { throw std::runtime_error(message); }
+// Every failure the library raises is an Error, which carries the kind a Result reports.
+// Fail() without a kind is for data that does not make sense (the common case in the decoders).
+[[noreturn]] inline void Fail(ErrorKind kind, const std::string& message) { throw Error(kind, message); }
+[[noreturn]] inline void Fail(const std::string& message) { Fail(ErrorKind::kData, message); }
+[[noreturn]] inline void FailCancelled() { Fail(ErrorKind::kCancelled, kCancelled); }
 
 // An error that may disappear on its own (a dropped connection, a busy server): worth retrying after a pause.
-class TransientError : public std::runtime_error {
+class TransientError : public Error {
  public:
-  using std::runtime_error::runtime_error;
+  explicit TransientError(const std::string& message) : Error(ErrorKind::kNetwork, message) {}
 };
 
 [[noreturn]] inline void FailTransient(const std::string& message) { throw TransientError(message); }
+
+// The kind of an exception caught at the boundary of an item: its own for an Error, a filesystem error for what
+// std::filesystem throws, otherwise kOther.
+inline ErrorKind KindOf(const std::exception& e) {
+  if (const auto* error = dynamic_cast<const Error*>(&e)) return error->kind();
+  if (dynamic_cast<const std::filesystem::filesystem_error*>(&e)) return ErrorKind::kFilesystem;
+  return ErrorKind::kOther;
+}
 
 inline ByteSpan AsBytes(std::string_view text) {
   return {reinterpret_cast<const std::uint8_t*>(text.data()), text.size()};

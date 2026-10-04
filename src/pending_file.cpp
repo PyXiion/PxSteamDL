@@ -157,7 +157,7 @@ Sha1Hash Sha1File(const NativeFile& file, std::uint64_t size) {
   }
   ok = ok && mbedtls_sha1_finish(&context, hash.data()) == 0;
   mbedtls_sha1_free(&context);
-  if (!ok) Fail("SHA-1: failed to read file");
+  if (!ok) Fail(ErrorKind::kFilesystem, "SHA-1: failed to read file");
   return hash;
 }
 
@@ -167,7 +167,7 @@ bool ContentMatches(const fs::path& path, const ManifestFile& file) {
   NativeFile contents;
   if (!contents.openRead(path)) {
     std::string reason = NativeFile::lastError();
-    Fail("cannot open file for SHA-1 verification: " + ToUtf8(path) + ": " + reason);
+    Fail(ErrorKind::kFilesystem, "cannot open file for SHA-1 verification: " + ToUtf8(path) + ": " + reason);
   }
   return file.size == 0 || Sha1File(contents, file.size) == file.sha;
 }
@@ -190,13 +190,13 @@ PendingFile::PendingFile(const ManifestFile& source, fs::path destination, std::
     if (!NativeFile::alreadyExists()) {
       std::string reason = NativeFile::lastError();
       m_temp.clear();
-      Fail("cannot create temporary file for " + ToUtf8(m_final) + ": " + reason);
+      Fail(ErrorKind::kFilesystem, "cannot create temporary file for " + ToUtf8(m_final) + ": " + reason);
     }
   }
   if (!created.resize(source.size)) {
     std::string reason = NativeFile::lastError();
     discard();
-    Fail("cannot size temporary file for " + ToUtf8(m_final) + ": " + reason);
+    Fail(ErrorKind::kFilesystem, "cannot size temporary file for " + ToUtf8(m_final) + ": " + reason);
   }
 }
 
@@ -211,13 +211,13 @@ void PendingFile::write(std::uint64_t offset, ByteSpan data) {
     std::lock_guard lock(m_mutex);
     if (!m_out->isOpen() && !m_out->openWrite(m_temp)) {
       std::string reason = NativeFile::lastError();
-      Fail("cannot open temporary file for " + ToUtf8(m_final) + ": " + reason);
+      Fail(ErrorKind::kFilesystem, "cannot open temporary file for " + ToUtf8(m_final) + ": " + reason);
     }
   }
   // The handle stays open until this write is counted done.
   if (!m_out->writeAt(offset, data)) {
     std::string reason = NativeFile::lastError();
-    Fail("write failed: " + ToUtf8(m_final) + ": " + reason);
+    Fail(ErrorKind::kFilesystem, "write failed: " + ToUtf8(m_final) + ": " + reason);
   }
 }
 

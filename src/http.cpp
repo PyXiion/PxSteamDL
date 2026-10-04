@@ -20,10 +20,6 @@ extern const std::size_t kCaBundleSize;
 
 namespace {
 
-constexpr long kConnectTimeoutSeconds = 10;
-// A transfer slower than 1 byte/s for this long is aborted.
-constexpr long kStallTimeoutSeconds = 30;
-
 #ifdef _WIN32
 // MBEDTLS_THREADING_ALT mutexes (cmake/mbedtls): an SRWLOCK is one zero-initialized pointer and needs no cleanup.
 PSRWLOCK SrwLock(mbedtls_threading_mutex_t* mutex) { return reinterpret_cast<PSRWLOCK>(&mutex->lock); }
@@ -46,7 +42,7 @@ void InitCurl() {
     // Must precede every other mbedTLS call; curl_global_init starts PSA crypto.
     mbedtls_threading_set_alt(MutexInit, MutexFree, MutexLock, MutexUnlock);
 #endif
-    if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) Fail("curl_global_init failed");
+    if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) Fail(ErrorKind::kOther, "curl_global_init failed");
   });
 }
 
@@ -83,12 +79,17 @@ void SetCaBundle(CURL* curl) {
   curl_easy_setopt(curl, CURLOPT_CAINFO_BLOB, &blob);
 }
 
-HttpResponse HttpRequest(std::string_view url, std::string_view method, std::string_view body,
+void SetProxyAndConnectTimeout(void* curl, const HttpConfig& config) {
+  if (config.proxy) curl_easy_setopt(curl, CURLOPT_PROXY, config.proxy->c_str());
+  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, config.connect_timeout_seconds);
+}
+
+HttpResponse HttpRequest(std::string_view url, const HttpConfig& config, std::string_view method, std::string_view body,
                          std::string_view content_type) {
   InitCurl();
   thread_local std::unique_ptr<CURL, decltype(&curl_easy_cleanup)> handle(curl_easy_init(), &curl_easy_cleanup);
   CURL* curl = handle.get();
-  if (!curl) Fail("curl_easy_init failed");
+  if (!curl) Fail(ErrorKind::kOther, "curl_easy_init failed");
   curl_easy_reset(curl);  // keeps the connection cache, clears the options
 
   std::string url_string(url);
@@ -107,9 +108,9 @@ HttpResponse HttpRequest(std::string_view url, std::string_view method, std::str
   curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, error);
   SetCaBundle(curl);
   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, kConnectTimeoutSeconds);
+  SetProxyAndConnectTimeout(curl, config);
   curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
-  curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, kStallTimeoutSeconds);
+  curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, config.stall_timeout_seconds);
   curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
   curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, AppendBody);
@@ -119,7 +120,7 @@ HttpResponse HttpRequest(std::string_view url, std::string_view method, std::str
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.data());
     curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE, static_cast<curl_off_t>(body.size()));
   } else if (method_string != "GET") {
-    Fail("HttpRequest: unsupported method " + method_string);
+    Fail(ErrorKind::kOther, "HttpRequest: unsupported method " + method_string);
   }
 
   CURLcode status = curl_easy_perform(curl);

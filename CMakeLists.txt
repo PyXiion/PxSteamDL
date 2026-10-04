@@ -229,6 +229,7 @@ set(PXSTEAMDL_CORE_SOURCES
     src/crypto.cpp
     src/downloader.cpp
     src/eresult.cpp
+    src/error.cpp
     src/manifest.cpp
     src/paths.cpp
     src/pending_file.cpp
@@ -331,6 +332,7 @@ if(PXSTEAMDL_BUILD_TESTS)
         tests/cm_packet_test.cpp
         tests/crypto_test.cpp
         tests/eresult_test.cpp
+        tests/error_test.cpp
         tests/manifest_test.cpp
         tests/paths_test.cpp
         tests/proto_test.cpp

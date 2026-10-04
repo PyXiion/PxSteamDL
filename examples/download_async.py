@@ -11,14 +11,18 @@ import pxsteamdl
 
 async def main() -> int:
     root, ids = sys.argv[1], [int(arg) for arg in sys.argv[2:]]
-    client = await pxsteamdl.AsyncClient.create()  # logs in in a worker thread
+    try:
+        client = await pxsteamdl.AsyncClient.create()  # logs in in a worker thread; takes Client's arguments
+    except pxsteamdl.Error as e:
+        print(f"cannot log in ({e.kind.name}): {e}")
+        return 1
 
     # Callbacks run on the event loop thread, so they may touch loop state freely.
     def on_resolved(info: pxsteamdl.ItemInfo) -> None:
         print(f"skipped {info.item_id}: {info.error}" if info.error else f"found {info.item_id} {info.title!r}")
 
     def on_progress(progress: pxsteamdl.Progress) -> None:
-        print(f"\r{progress.item_id}: {progress.bytes_done}/{progress.bytes_total}", end="")
+        print(f"\r{progress.item_id}: {progress.unpacked_bytes}/{progress.unpacked_total}", end="")
 
     # One client serves several downloads at once.
     halves = [ids[::2], ids[1::2]]
@@ -44,7 +48,7 @@ async def main() -> int:
             print(f"ok     {result.item_id} -> {result.path}")
         else:
             failed += 1
-            print(f"failed {result.item_id}: {result.error}")
+            print(f"failed {result.item_id} [{result.error_kind.name}]: {result.error}")
     return int(failed > 0)
 
 

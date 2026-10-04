@@ -79,8 +79,8 @@ std::string DescribeEResult(std::int64_t code);
 // Whether Steam may answer differently a little later: it is busy, rate-limiting us, or the connection broke.
 bool IsTransientEResult(std::int64_t code);
 
-// Throws "<what>: <description> (EResult N)", with detail in parentheses if it is not empty: a TransientError if the
-// code is transient, a std::runtime_error otherwise.
+// Throws "<what>: <description> (EResult N)", with detail in parentheses if it is not empty: a TransientError
+// (kNetwork) if the code is transient, otherwise an Error of kind kNotFound for 9 and kRejected for the rest.
 [[noreturn]] void FailEResult(const std::string& what, std::int64_t code, std::string_view detail = {});
 
 }  // namespace pxsteamdl::detail

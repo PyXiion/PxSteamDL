@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Uses all of the C++ API: Version(), Client, Options (parallelism, on_resolved, on_progress, stop token),
-// ItemInfo, Progress and Result. Usage: example-download DIR ITEM_ID...
+// Uses all of the C++ API: Version(), Client and ClientOptions, Options (parallelism, on_resolved, on_progress,
+// stop token), ItemInfo, Progress, Result, ErrorKind and Error. Usage: example-download DIR ITEM_ID...
 #include <chrono>
 #include <csignal>
 #include <cstdint>
@@ -46,7 +46,9 @@ int main(int argc, char** argv) {
   });
 
   try {
-    pxsteamdl::Client client;  // anonymous login; throws std::runtime_error on failure
+    pxsteamdl::ClientOptions client_options;  // optional: proxy and timeouts
+    client_options.connect_timeout = std::chrono::seconds(10);
+    pxsteamdl::Client client(client_options);  // anonymous login; throws pxsteamdl::Error on failure
 
     pxsteamdl::Options options;
     options.parallel_items = 2;
@@ -66,9 +68,13 @@ int main(int argc, char** argv) {
     std::mutex print_mutex;
     options.on_progress = [&print_mutex](const pxsteamdl::Progress& progress) {
       std::lock_guard lock(print_mutex);
-      std::printf("\r%llu %s: %llu/%llu bytes   ", static_cast<unsigned long long>(progress.item_id),
-                  progress.title.c_str(), static_cast<unsigned long long>(progress.bytes_done),
-                  static_cast<unsigned long long>(progress.bytes_total));
+      // downloaded_*: what crossed the network (compressed); unpacked_*: what is written to disk.
+      std::printf("\r%llu %s: downloaded %llu/%llu, unpacked %llu/%llu bytes   ",
+                  static_cast<unsigned long long>(progress.item_id), progress.title.c_str(),
+                  static_cast<unsigned long long>(progress.downloaded_bytes),
+                  static_cast<unsigned long long>(progress.downloaded_total),
+                  static_cast<unsigned long long>(progress.unpacked_bytes),
+                  static_cast<unsigned long long>(progress.unpacked_total));
       std::fflush(stdout);
     };
 
@@ -77,14 +83,20 @@ int main(int argc, char** argv) {
     int failed = 0;
     std::cout << "\n";
     for (const pxsteamdl::Result& result : results) {
-      if (result.error.empty()) {
-        std::cout << "ok     " << result.item_id << " -> " << result.path.string() << "\n";
+      if (result.ok()) {
+        std::cout << "ok     " << result.item_id << " -> " << result.path.string() << " (" << result.downloaded_bytes
+                  << " bytes downloaded, " << result.unpacked_bytes << " unpacked)\n";
       } else {
         ++failed;
-        std::cout << "failed " << result.item_id << ": " << result.error << "\n";
+        // error_kind says what kind of failure it was, e.g. to retry only the kNetwork ones.
+        std::cout << "failed " << result.item_id << " [" << pxsteamdl::ErrorKindName(result.error_kind)
+                  << "]: " << result.error << "\n";
       }
     }
     return g_interrupted ? 130 : failed ? 1 : 0;
+  } catch (const pxsteamdl::Error& e) {
+    std::cerr << "error (" << pxsteamdl::ErrorKindName(e.kind()) << "): " << e.what() << "\n";
+    return 1;
   } catch (const std::exception& e) {
     std::cerr << "error: " << e.what() << "\n";
     return 1;

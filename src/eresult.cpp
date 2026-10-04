@@ -151,7 +151,8 @@ void FailEResult(const std::string& what, std::int64_t code, std::string_view de
   std::string message = what + ": " + DescribeEResult(code);
   if (!detail.empty()) message += " (" + std::string(detail) + ")";
   if (IsTransientEResult(code)) FailTransient(message);
-  Fail(message);
+  Fail(code == static_cast<std::int64_t>(EResult::kFileNotFound) ? ErrorKind::kNotFound : ErrorKind::kRejected,
+       message);
 }
 
 std::string DescribeEResult(std::int64_t code) {

@@ -15,13 +15,27 @@
 
 namespace pxsteamdl::detail {
 
+// How far an item is. "Downloaded" counts what comes over the network (encrypted and compressed chunks), "unpacked"
+// what is decrypted, decompressed and written; both cover only the data that had to be fetched, so an item that
+// is up to date reports zeros.
+struct JobProgress {
+  std::uint64_t downloaded = 0;
+  std::uint64_t downloaded_total = 0;
+  std::uint64_t unpacked = 0;
+  std::uint64_t unpacked_total = 0;
+};
+
 struct ItemJob {
   Item item;
   std::filesystem::path destination;
-  // Called with (bytes done, bytes total) from worker threads.
-  std::function<void(std::uint64_t, std::uint64_t)> progress;
+  // Called from worker threads.
+  std::function<void(const JobProgress&)> progress;
   // Set when the item fails.
   std::string error;
+  ErrorKind error_kind = ErrorKind::kNone;
+  // What this run fetched and wrote; set when the job ends, whether it succeeded or not.
+  std::uint64_t downloaded = 0;
+  std::uint64_t unpacked = 0;
 };
 
 // Downloads jobs as they are added, while the caller is still looking up further items. Up to parallel_items items

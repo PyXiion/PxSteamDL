@@ -18,11 +18,34 @@ as described in [CONTRIBUTING.md](CONTRIBUTING.md#versioning).
   (HTTP 429/5xx, a network error) CDN downloads pause before they try the next host. Pauses end when the download is
   cancelled.
 - Steam's result codes are spelled out: `Steam rejected the item: not found (EResult 9)` instead of `Steam result 9`.
+- `ErrorKind` (`kNone`, `kCancelled`, `kNotFound`, `kRejected`, `kNetwork`, `kData`, `kFilesystem`, `kOther`) in
+  `Result::error_kind` and `ItemInfo::error_kind`, so callers need not parse messages; `pxsteamdl::Error` (a
+  `std::runtime_error` with `kind()`) is what `Client`'s constructor throws. Python: `ErrorKind`, `Error`,
+  `Result.error_kind`, `ItemInfo.error_kind`.
+- `Result::ok()`, `Result::cancelled()`, `ItemInfo::ok()`, `ItemInfo::cancelled()` (Python properties `ok` and
+  `cancelled`; `Result.ok` existed).
+- `ClientOptions` (C++) and `Client(proxy=, connect_timeout=, stall_timeout=)` (Python): a proxy, a connect timeout and
+  a stall timeout for all connections.
+- `Result::downloaded_bytes` and `unpacked_bytes`: what a run fetched for the item, over the network and on disk.
+- `Client` can be moved. Python: `Result`, `ItemInfo` and `Progress` can be constructed (keyword arguments), for tests.
+- `pxsteamdl -h`/`--help` (exit code 0) and `--` (the rest are item IDs).
 - Unit tests (GoogleTest, `-DPXSTEAMDL_BUILD_TESTS=ON`), including end-to-end tests of `Client` against a pretend
   Steam; the network smoke tests run in CI again, on all three platforms.
 
 ### Changed
 
+- **Breaking:** `Progress::bytes_done` and `bytes_total` are replaced by `downloaded_bytes`/`downloaded_total` (what came
+  over the network: encrypted, compressed chunks) and `unpacked_bytes`/`unpacked_total` (what was decrypted,
+  decompressed and written). The old pair counted the unpacked bytes, so `unpacked_*` is the drop-in replacement. Same
+  in Python.
+- **Behavior change:** `download()` returns one `Result` per entry of the ID list, also for a repeated ID: the item is
+  downloaded once and every occurrence gets the same result. Before, a repeated ID made two jobs write the same
+  directory at once, and one of them could fail.
+- **Behavior change:** `download()` throws `std::invalid_argument` if `parallel_items` or `threads_per_item` is 0
+  (the CLI refuses `-j 0` and `-t 0` with exit code 2); before, 0 was taken as 1. Python already raised `ValueError`.
+- `Result::path` is documented: it is `root/<id>` for every item, failed ones included. An exception thrown by
+  `on_progress` fails its item (kind `kOther`), one thrown by `on_resolved` propagates out of `download()`; both are
+  now documented.
 - Item details are looked up in batches while earlier items already download, instead of all before the first byte.
   `on_resolved` is still called once per item, in order, on the thread that called `download()`, but progress of
   earlier items may now arrive before it.

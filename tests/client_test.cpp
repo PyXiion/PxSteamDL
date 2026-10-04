@@ -19,6 +19,7 @@
 
 #include "downloader.hpp"
 #include "eresult.hpp"
+#include "fake_http.hpp"
 #include "fake_session.hpp"
 #include "fake_sleep.hpp"
 #include "fake_steam.hpp"
@@ -171,8 +172,8 @@ TEST_F(ClientTest, DownloadsItemsIntoDirectories) {
   };
   options.on_progress = [&](const Progress& progress) {
     std::lock_guard lock(mutex);
-    done_by_item[progress.item_id].push_back(progress.bytes_done);
-    total_by_item[progress.item_id] = progress.bytes_total;
+    done_by_item[progress.item_id].push_back(progress.unpacked_bytes);
+    total_by_item[progress.item_id] = progress.unpacked_total;
     EXPECT_FALSE(progress.title.empty());
   };
 
@@ -232,7 +233,7 @@ TEST_F(ClientTest, SecondRunDownloadsNothing) {
 
   std::vector<std::pair<std::uint64_t, std::uint64_t>> progress;
   Options options;
-  options.on_progress = [&](const Progress& p) { progress.emplace_back(p.bytes_done, p.bytes_total); };
+  options.on_progress = [&](const Progress& p) { progress.emplace_back(p.unpacked_bytes, p.unpacked_total); };
   std::vector<Result> results = download({111}, options);
 
   EXPECT_TRUE(results[0].error.empty());
@@ -285,8 +286,16 @@ TEST_F(ClientTest, ReportsItemsSteamDoesNotKnow) {
 
   EXPECT_TRUE(results[0].error.empty());
   EXPECT_EQ(results[1].error, "Steam rejected the item: not found (EResult 9)");
+  EXPECT_EQ(results[1].error_kind, ErrorKind::kNotFound);
+  EXPECT_TRUE(results[0].ok());
+  EXPECT_EQ(results[0].error_kind, ErrorKind::kNone);
+  EXPECT_FALSE(results[1].ok());
+  EXPECT_FALSE(results[1].cancelled());
   ASSERT_EQ(infos.size(), 2u);
   EXPECT_EQ(infos[1].error, results[1].error);
+  EXPECT_EQ(infos[1].error_kind, ErrorKind::kNotFound);
+  EXPECT_TRUE(infos[0].ok());
+  EXPECT_FALSE(infos[1].ok());
   EXPECT_FALSE(fs::exists(itemDir(12345)));
 }
 
@@ -325,6 +334,8 @@ TEST_F(ClientTest, ChunkMissingOnEveryHostFailsOnlyItsItem) {
 
   EXPECT_NE(results[0].error.find("CDN request failed"), std::string::npos) << results[0].error;
   EXPECT_NE(results[0].error.find("HTTP 404"), std::string::npos) << results[0].error;
+  EXPECT_EQ(results[0].error_kind, ErrorKind::kRejected);
+  EXPECT_EQ(results[0].path, itemDir(111));  // set for a failed item too
   EXPECT_TRUE(results[1].error.empty());
   expectOnDisk(fine);
   EXPECT_FALSE(HasTemporaryFiles(itemDir(111)));
@@ -398,6 +409,8 @@ TEST_F(ClientTest, CancelledDownloadKeepsTheOldFilesAndLeavesNoTemporaryFiles) {
   std::vector<Result> results = download({111}, options);
 
   EXPECT_EQ(results[0].error, "cancelled");
+  EXPECT_EQ(results[0].error_kind, ErrorKind::kCancelled);
+  EXPECT_TRUE(results[0].cancelled());
   EXPECT_LT(chunk_calls.load(), 8);
   expectOnDisk(item);
   EXPECT_FALSE(HasTemporaryFiles(itemDir(111)));
@@ -417,6 +430,8 @@ TEST_F(ClientTest, StopRequestedBeforeTheStartCancelsEverything) {
   EXPECT_EQ(results[0].error, "cancelled");
   ASSERT_EQ(infos.size(), 1u);
   EXPECT_EQ(infos[0].error, "cancelled");
+  EXPECT_TRUE(infos[0].cancelled());
+  EXPECT_TRUE(results[0].cancelled());
   EXPECT_TRUE(m_steam.calls().empty());
   EXPECT_FALSE(fs::exists(itemDir(111)));
 }
@@ -464,6 +479,7 @@ TEST_F(ClientTest, ItemDetailsRequestThatKeepsFailingFailsItsBatchOnly) {
   ASSERT_EQ(results.size(), kItems);
   for (std::size_t i = 0; i < 100; ++i) {
     EXPECT_EQ(results[i].error, "item details: GetPublishedFileDetails: HTTP 503") << i;
+    EXPECT_EQ(results[i].error_kind, ErrorKind::kNetwork) << i;
   }
   EXPECT_TRUE(results[100].error.empty()) << results[100].error;
   EXPECT_EQ(ReadFile(itemDir(101) / "a.txt"), Content(101, 10));
@@ -484,6 +500,7 @@ TEST_F(ClientTest, ItemDetailsFailureWithoutRetryIsReportedAtOnce) {
   });
   std::vector<Result> results = download({111});
   EXPECT_EQ(results[0].error, "item details: GetPublishedFileDetails: HTTP 403");
+  EXPECT_EQ(results[0].error_kind, ErrorKind::kRejected);
   EXPECT_EQ(m_steam.callCount(RequestKind::kDetails), 1);
   EXPECT_TRUE(detail::testing::RecordedSleeps().empty());
 }
@@ -555,6 +572,7 @@ TEST_F(ClientTest, CdnChunkThatKeepsFailingGivesUp) {
   std::vector<Result> results = download({111}, sequential());
 
   EXPECT_NE(results[0].error.find("HTTP 502"), std::string::npos) << results[0].error;
+  EXPECT_EQ(results[0].error_kind, ErrorKind::kNetwork);
   // Two hosts: four attempts, a pause after each but the last.
   EXPECT_EQ(m_steam.callCount(RequestKind::kChunk), 4);
   EXPECT_EQ(detail::testing::RecordedSleeps().size(), 3u);
@@ -610,6 +628,7 @@ TEST_F(ClientTest, RejectedDepotKeyIsNotRetried) {
   m_steam.setDepotKeyEResult(15);
   std::vector<Result> results = download({111});
   EXPECT_EQ(results[0].error, "depot key request failed: access denied (EResult 15)");
+  EXPECT_EQ(results[0].error_kind, ErrorKind::kRejected);
   EXPECT_EQ(m_steam.sessionCallCount(SessionCall::kDepotKey), 1);
   EXPECT_TRUE(detail::testing::RecordedSleeps().empty());
 }
@@ -619,6 +638,7 @@ TEST_F(ClientTest, DepotKeyRequestThatIsRateLimitedIsRetriedUntilItGivesUp) {
   m_steam.setDepotKeyEResult(84);
   std::vector<Result> results = download({111});
   EXPECT_EQ(results[0].error, "depot key request failed: rate limit exceeded (EResult 84)");
+  EXPECT_EQ(results[0].error_kind, ErrorKind::kNetwork);
   EXPECT_EQ(m_steam.sessionCallCount(SessionCall::kDepotKey), kMaxAttempts);
   EXPECT_EQ(detail::testing::RecordedSleeps().size(), static_cast<std::size_t>(kMaxAttempts - 1));
 }
@@ -672,6 +692,231 @@ TEST_F(ClientTest, ResolvesItemsInOrder) {
   EXPECT_EQ(resolved, (std::vector<std::uint64_t>{30, 10, 20}));
 }
 
+// ---- error kinds ----
+
+TEST_F(ClientTest, ChunkThatIsCorruptOnEveryHostIsADataError) {
+  m_steam.addItem(MakeItem(111, "Alpha"));
+  m_steam.setHttpHook([](const HttpCall& call) -> std::optional<detail::HttpResponse> {
+    if (call.kind != RequestKind::kChunk) return std::nullopt;
+    detail::HttpResponse response;
+    response.status = 200;
+    response.body.assign(64, 0x42);
+    return response;
+  });
+  std::vector<Result> results = download({111}, sequential());
+  EXPECT_FALSE(results[0].ok());
+  EXPECT_EQ(results[0].error_kind, ErrorKind::kData) << results[0].error;
+}
+
+#ifndef _WIN32
+TEST_F(ClientTest, DestinationThatIsASymlinkIsAFilesystemError) {
+  m_steam.addItem(MakeItem(111, "Alpha"));
+  fs::path elsewhere = m_root / "elsewhere";
+  fs::create_directories(elsewhere);
+  fs::create_directory_symlink(elsewhere, itemDir(111));
+  std::vector<Result> results = download({111});
+  EXPECT_EQ(results[0].error, "destination must not be a symlink");
+  EXPECT_EQ(results[0].error_kind, ErrorKind::kFilesystem);
+  EXPECT_TRUE(fs::is_empty(elsewhere));
+}
+#endif
+
+// ---- downloaded and unpacked bytes ----
+
+TEST_F(ClientTest, ProgressCountsDownloadedAndUnpackedBytesSeparately) {
+  FakeItem item = MakeItem(111, "Alpha");
+  m_steam.addItem(item);
+  std::mutex mutex;
+  std::vector<Progress> seen;
+  Options options = sequential();
+  options.on_progress = [&](const Progress& progress) {
+    std::lock_guard lock(mutex);
+    seen.push_back(progress);
+  };
+
+  std::vector<Result> results = download({111}, options);
+
+  std::uint64_t content_bytes = 0;
+  for (const FakeFile& file : item.files) content_bytes += file.content.size();
+  ASSERT_TRUE(results[0].ok()) << results[0].error;
+  ASSERT_FALSE(seen.empty());
+  const Progress& last = seen.back();
+  EXPECT_EQ(last.unpacked_total, content_bytes);
+  EXPECT_EQ(last.unpacked_bytes, content_bytes);
+  EXPECT_GT(last.downloaded_total, 0u);
+  EXPECT_EQ(last.downloaded_bytes, last.downloaded_total);
+  // The chunks are encrypted (a 16-byte IV and padding at least), so the two are different quantities.
+  EXPECT_NE(last.downloaded_total, last.unpacked_total);
+  EXPECT_EQ(results[0].unpacked_bytes, last.unpacked_bytes);
+  EXPECT_EQ(results[0].downloaded_bytes, last.downloaded_bytes);
+  for (std::size_t i = 1; i < seen.size(); ++i) {
+    EXPECT_GE(seen[i].downloaded_bytes, seen[i - 1].downloaded_bytes);
+    EXPECT_GE(seen[i].unpacked_bytes, seen[i - 1].unpacked_bytes);
+    EXPECT_EQ(seen[i].downloaded_total, last.downloaded_total);
+    EXPECT_EQ(seen[i].unpacked_total, last.unpacked_total);
+  }
+}
+
+TEST_F(ClientTest, ResultCountsOnlyWhatWasFetchedInThisRun) {
+  FakeItem item = MakeItem(111, "Alpha");
+  m_steam.addItem(item);
+  ASSERT_TRUE(download({111})[0].ok());
+
+  Result again = download({111})[0];
+  EXPECT_TRUE(again.ok());
+  EXPECT_EQ(again.downloaded_bytes, 0u);
+  EXPECT_EQ(again.unpacked_bytes, 0u);
+
+  FakeItem updated = item;
+  updated.files[1].content = Content(99, 75);  // only Things.xml changes
+  m_steam.addItem(updated);
+  Result changed = download({111})[0];
+  EXPECT_TRUE(changed.ok());
+  EXPECT_EQ(changed.unpacked_bytes, 75u);
+  EXPECT_GT(changed.downloaded_bytes, 0u);
+}
+
+TEST_F(ClientTest, LegacyItemReportsItsFileAsDownloadedAndUnpacked) {
+  m_steam.addLegacyItem(FakeLegacyItem{7, "Old mod", "Old.zip", "legacy bytes"});
+  Result result = download({7})[0];
+  EXPECT_EQ(result.downloaded_bytes, 12u);
+  EXPECT_EQ(result.unpacked_bytes, 12u);
+}
+
+// ---- repeated IDs ----
+
+TEST_F(ClientTest, RepeatedIdIsDownloadedOnceAndAnsweredEachTime) {
+  FakeItem alpha = MakeItem(111, "Alpha");
+  FakeItem beta = MakeItem(222, "Beta", 5);
+  m_steam.addItem(alpha);
+  m_steam.addItem(beta);
+  std::vector<std::uint64_t> resolved;
+  Options options;
+  options.on_resolved = [&](const ItemInfo& info) { resolved.push_back(info.item_id); };
+
+  std::vector<Result> results = download({111, 222, 111, 111}, options);
+
+  ASSERT_EQ(results.size(), 4u);
+  EXPECT_EQ(results[0].item_id, 111u);
+  EXPECT_EQ(results[1].item_id, 222u);
+  EXPECT_EQ(results[2].item_id, 111u);
+  EXPECT_EQ(results[3].item_id, 111u);
+  for (const Result& result : results) EXPECT_TRUE(result.ok()) << result.error;
+  for (std::size_t copy : {2u, 3u}) {
+    EXPECT_EQ(results[copy].title, results[0].title);
+    EXPECT_EQ(results[copy].path, results[0].path);
+    EXPECT_EQ(results[copy].downloaded_bytes, results[0].downloaded_bytes);
+    EXPECT_EQ(results[copy].unpacked_bytes, results[0].unpacked_bytes);
+  }
+  EXPECT_EQ(resolved, (std::vector<std::uint64_t>{111, 222}));  // once per distinct item
+  EXPECT_EQ(m_steam.callCount(RequestKind::kChunk), static_cast<int>(totalChunks(alpha) + totalChunks(beta)));
+  expectOnDisk(alpha);
+  expectOnDisk(beta);
+}
+
+TEST_F(ClientTest, RepeatedFailingIdFailsEveryOccurrence) {
+  m_steam.addItem(MakeItem(111, "Alpha"));
+  std::vector<Result> results = download({12345, 111, 12345});
+  ASSERT_EQ(results.size(), 3u);
+  EXPECT_EQ(results[0].error_kind, ErrorKind::kNotFound);
+  EXPECT_EQ(results[2].error, results[0].error);
+  EXPECT_EQ(results[2].error_kind, ErrorKind::kNotFound);
+  EXPECT_TRUE(results[1].ok());
+}
+
+// ---- options ----
+
+TEST_F(ClientTest, ZeroParallelismIsRefused) {
+  Client client;
+  Options options;
+  options.parallel_items = 0;
+  EXPECT_THROW(client.download({}, m_root, options), std::invalid_argument);
+  options = {};
+  options.threads_per_item = 0;
+  EXPECT_THROW(client.download({}, m_root, options), std::invalid_argument);
+}
+
+TEST_F(ClientTest, TimeoutsBelowOneSecondAreRefused) {
+  ClientOptions options;
+  options.connect_timeout = std::chrono::seconds(0);
+  EXPECT_THROW(Client{options}, std::invalid_argument);
+  options = {};
+  options.stall_timeout = std::chrono::seconds(0);
+  EXPECT_THROW(Client{options}, std::invalid_argument);
+}
+
+TEST_F(ClientTest, ClientOptionsReachEveryRequest) {
+  m_steam.addItem(MakeItem(111, "Alpha"));
+  ClientOptions options;
+  options.proxy = "http://proxy.test:3128";
+  options.connect_timeout = std::chrono::seconds(7);
+  options.stall_timeout = std::chrono::seconds(11);
+  Client client(options);
+  std::vector<std::uint64_t> ids{111};
+  ASSERT_TRUE(client.download(ids, m_root)[0].ok());
+
+  detail::HttpConfig config = detail::testing::LastHttpConfig();
+  EXPECT_EQ(config.proxy, std::optional<std::string>("http://proxy.test:3128"));
+  EXPECT_EQ(config.connect_timeout_seconds, 7);
+  EXPECT_EQ(config.stall_timeout_seconds, 11);
+}
+
+TEST_F(ClientTest, DefaultClientOptionsLeaveTheProxyToTheEnvironment) {
+  m_steam.addItem(MakeItem(111, "Alpha"));
+  ASSERT_TRUE(download({111})[0].ok());
+  detail::HttpConfig config = detail::testing::LastHttpConfig();
+  EXPECT_FALSE(config.proxy.has_value());
+  EXPECT_EQ(config.connect_timeout_seconds, 10);
+  EXPECT_EQ(config.stall_timeout_seconds, 30);
+}
+
+TEST_F(ClientTest, ClientCanBeMoved) {
+  m_steam.addItem(MakeItem(111, "Alpha"));
+  m_steam.addItem(MakeItem(222, "Beta", 5));
+  Client first;
+  Client second = std::move(first);
+  std::vector<std::uint64_t> ids{111};
+  EXPECT_TRUE(second.download(ids, m_root)[0].ok());
+
+  Client third;
+  third = std::move(second);
+  ids = {222};
+  EXPECT_TRUE(third.download(ids, m_root)[0].ok());
+}
+
+// ---- callbacks that throw ----
+
+TEST_F(ClientTest, ProgressCallbackThatThrowsFailsOnlyItsItem) {
+  m_steam.addItem(MakeItem(111, "Alpha"));
+  FakeItem beta = MakeItem(222, "Beta", 5);
+  m_steam.addItem(beta);
+  Options options;
+  options.on_progress = [](const Progress& progress) {
+    if (progress.item_id == 111) throw std::runtime_error("callback failed");
+  };
+
+  std::vector<Result> results = download({111, 222}, options);
+
+  EXPECT_EQ(results[0].error, "callback failed");
+  EXPECT_EQ(results[0].error_kind, ErrorKind::kOther);
+  EXPECT_TRUE(results[1].ok()) << results[1].error;
+  expectOnDisk(beta);
+  EXPECT_FALSE(HasTemporaryFiles(itemDir(111)));
+}
+
+TEST_F(ClientTest, ResolvedCallbackThatThrowsEndsTheDownload) {
+  m_steam.addItem(MakeItem(111, "Alpha"));
+  m_steam.addItem(MakeItem(222, "Beta", 5));
+  Options options;
+  options.on_resolved = [](const ItemInfo& info) {
+    if (info.item_id == 222) throw std::runtime_error("callback failed");
+  };
+
+  EXPECT_THROW(download({111, 222}, options), std::runtime_error);
+  EXPECT_FALSE(HasTemporaryFiles(itemDir(111)));
+  EXPECT_FALSE(HasTemporaryFiles(itemDir(222)));
+}
+
 // ---- Downloader on its own ----
 
 class DownloaderTest : public ClientTest {
@@ -680,12 +925,12 @@ class DownloaderTest : public ClientTest {
     m_steam.addItem(item);
     detail::ItemJob job;
     std::vector<std::uint64_t> ids{item.id};
-    detail::FetchItems(ids, {}, [&](detail::Item found) { job.item = std::move(found); });
+    detail::FetchItems(ids, {}, {}, [&](detail::Item found) { job.item = std::move(found); });
     job.destination = itemDir(item.id);
     return job;
   }
 
-  detail::Session m_session;
+  detail::Session m_session{detail::HttpConfig{}};
 };
 
 TEST_F(DownloaderTest, DestroyedWithoutFinishStopsItsJobs) {

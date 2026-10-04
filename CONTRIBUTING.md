@@ -41,8 +41,10 @@ and has to be renamed by hand.
 
 ### Where it differs from Google's guide
 
-- **Exceptions are used** for errors (`std::runtime_error`, via `detail::Fail`), so per-item failures can unwind
-  through the download pipeline. `detail::TransientError` marks a failure that is worth retrying (`detail::Retry`).
+- **Exceptions are used** for errors, so per-item failures can unwind through the download pipeline. They are
+  `pxsteamdl::Error`s (a `std::runtime_error` with an `ErrorKind`), raised through `detail::Fail`, which defaults to
+  `kData`; pass the kind where it is something else. `detail::TransientError` (`kNetwork`) marks a failure that is
+  worth retrying (`detail::Retry`). Whatever else reaches an item's boundary is classified by `detail::KindOf`.
 - **120 columns** instead of 80 (indentation stays at 2 spaces).
 - **`#pragma once`** instead of `#define` guards; **`.hpp`/`.cpp`** extensions.
 - The **public API keeps snake_case fields** (`Options::parallel_items`), as Google style allows for structs, and
@@ -64,15 +66,18 @@ break the API; a patch version never does.
 
 Covered by the version number:
 
-- the C++ API in `include/pxsteamdl/` (everything in namespace `pxsteamdl` except `detail`) and the macros of
-  `<pxsteamdl/version.hpp>`;
-- the Python package `pxsteamdl`: the names in `__all__`;
+- the C++ API in `include/pxsteamdl/` (everything in namespace `pxsteamdl` except `detail`), including the meaning of
+  each `ErrorKind`, and the macros of `<pxsteamdl/version.hpp>`;
+- the Python package `pxsteamdl`: the names in `__all__` (`ErrorKind` members included);
 - the CLI's options and exit codes (0 success, 1 failure, 2 usage error, 130 interrupted);
 - the CMake package: `find_package(PxSteamDL)` and the target `PxSteamDL::pxsteamdl`;
 - the layout on disk: an item goes into `DIR/<ITEM_ID>/`, as with steamcmd;
-- the exact string `cancelled` as `Result::error` and `ItemInfo::error` of a stopped item.
+- the exact string `cancelled` as `Result::error` and `ItemInfo::error` of a stopped item, which also has
+  `error_kind == kCancelled`.
 
-Not covered: the wording of other error messages (match on `Result::error` being empty or not, not on its text),
+Not covered: the wording of other error messages (match on `Result::error_kind`, not on the text), which kind a
+particular failure gets in a case the documentation does not name (new kinds may be added; handle an unknown one like
+`kOther`), the fields that a future version may add to `Progress`, `ItemInfo`, `Result` and the option structs,
 the format of the CLI's human-readable output, the internal headers in `src/` and namespace `pxsteamdl::detail`, and the
 build recipe (which dependencies are built, and how). A change Steam forces on the protocol is a patch release even if
 it changes behavior.

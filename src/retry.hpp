@@ -23,12 +23,12 @@ std::chrono::milliseconds BackoffDelay(int failed_attempts);
 template <class Attempt>
 auto Retry(const std::stop_token& stop, Attempt attempt) -> decltype(attempt()) {
   for (int failed_attempts = 1;; ++failed_attempts) {
-    if (stop.stop_requested()) Fail(kCancelled);
+    if (stop.stop_requested()) FailCancelled();
     try {
       return attempt();
     } catch (const TransientError&) {
       if (failed_attempts >= kMaxAttempts) throw;
-      if (!SleepFor(BackoffDelay(failed_attempts), stop)) Fail(kCancelled);
+      if (!SleepFor(BackoffDelay(failed_attempts), stop)) FailCancelled();
     }
   }
 }
