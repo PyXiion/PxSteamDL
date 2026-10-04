@@ -2,6 +2,7 @@
 #include "pxsteamdl/error.hpp"
 
 #include <filesystem>
+#include <new>
 #include <stdexcept>
 #include <system_error>
 
