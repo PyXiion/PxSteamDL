@@ -161,6 +161,7 @@ void FakeSteam::addItem(const FakeItem& item) {
       entry.chunks.push_back(chunk);
       depot.chunks[ToHex(chunk.sha)] = std::move(encrypted);
     }
+    if (file.manifest_sha) entry.sha = *file.manifest_sha;
     entries.push_back(std::move(entry));
   }
 

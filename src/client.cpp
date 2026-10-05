@@ -65,7 +65,7 @@ std::vector<Result> DownloadUnique(detail::Session& session, std::span<const std
     result.error = item.error;
     result.error_kind = item.error_kind;
     if (!item.error.empty()) return;
-    // The downloader creates the directory, after refusing a symlink in its place.
+    // The downloader locks the destination and stages the update, after refusing a symlink in its place.
     detail::ItemJob& job = jobs.emplace_back();
     job.item = std::move(item);
     job.destination = result.path;

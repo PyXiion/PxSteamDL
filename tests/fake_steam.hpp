@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "common.hpp"
+#include "crypto.hpp"
 #include "http.hpp"
 
 namespace pxsteamdl::detail::testing {
@@ -28,6 +29,8 @@ struct FakeFile {
   std::string path;
   std::string content;
   bool executable = false;
+  // Overrides the whole-file hash without changing the correct chunk hashes/checksums.
+  std::optional<Sha1Hash> manifest_sha = std::nullopt;
 };
 
 struct FakeLink {

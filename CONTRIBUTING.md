@@ -8,7 +8,8 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-The unit tests (GoogleTest, `tests/`) need no network access and no waiting; see [Tests](#tests) below for how.
+The unit tests (GoogleTest, `tests/`) need no network access or retry pauses; lock contention tests use short bounded
+waits and a child process. See [Tests](#tests) below for how.
 
 ## Code style
 
@@ -54,10 +55,14 @@ and has to be renamed by hand.
 
 The unit tests build the library's sources against fakes of the three files that touch the outside world:
 `src/http.cpp`, `src/session.cpp` and `src/sleep.cpp` are replaced by `tests/fakes/fake_*.cpp`, so the whole download
-pipeline (item lookup, retries, manifests, chunk decoding, file handling, cancellation) runs offline and without
-waiting. `tests/fake_steam.cpp` is a pretend Steam built from items a test declares, and `tests/client_test.cpp`
+pipeline (item lookup, retries, manifests, chunk decoding, file handling, cancellation) runs offline without retry
+pauses. `tests/fake_steam.cpp` is a pretend Steam built from items a test declares, and `tests/client_test.cpp`
 drives `Client` against it. The real `SleepFor()` has its own small test executable. Anything new that talks to the
 network or sleeps goes through one of those three files.
+
+Directory locks use real kernel locks, including in the offline test build. `tests/directory_lock_test.cpp` checks
+same-process contention, cancellation and automatic release after forcibly terminating `pxsteamdl-lock-holder`.
+Its short bounded waits synchronize processes; they are separate from the fake network retry delays.
 
 ## Versioning
 

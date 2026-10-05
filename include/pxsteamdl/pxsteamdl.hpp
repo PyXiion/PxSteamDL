@@ -108,6 +108,7 @@ struct Options {
   // Cancellation: once stop is requested, in-flight chunk requests finish, remaining work is skipped and every
   // unfinished item reports Result::error == "cancelled"; completed items stay ok and download() returns normally.
   // As with failures, temporary files are removed and existing files of unfinished items are not replaced.
+  // Cancellation is checked before installation; directory replacement already under way finishes or rolls back.
   std::stop_token stop;
 };
 
@@ -126,6 +127,8 @@ class Client {
   // Returns one Result per entry of item_ids, in order. Per-item failures are reported in Result::error (and its
   // kind); thread-safe. A repeated ID is downloaded once: on_resolved is called once for it and every occurrence gets
   // the same Result. Throws std::invalid_argument if parallel_items or threads_per_item is 0.
+  // Downloads to the same directory wait for its kernel lock (root/.<id>.lock), with cancellation support, even
+  // across clients and processes. The persistent lock file records the last owner's PID; do not delete it.
   std::vector<Result> download(std::span<const std::uint64_t> item_ids, const std::filesystem::path& root,
                                const Options& options = {});
 

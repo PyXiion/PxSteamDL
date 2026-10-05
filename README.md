@@ -170,6 +170,7 @@ The same names exist in Python: `Result.error_kind` is a `pxsteamdl.ErrorKind` (
 `Result`, `ItemInfo` and `Progress` can be constructed with keyword arguments, e.g. to test code that takes them.
 
 `download` releases the GIL, and one `Client` may be used from several threads.
+Overlapping downloads into the same item directory wait for each other; the wait can be cancelled.
 An exception raised by `on_progress` or `on_resolved` is reported like an exception in a thread (`sys.unraisablehook`) and does not stop the download.
 The package ships type stubs.
 
@@ -210,6 +211,19 @@ directory and item IDs.
 
 - Updates are incremental: a file whose size and SHA-1 already match the manifest is not downloaded again. Files and directories that are not in the manifest are deleted, as steamcmd does.
 - Files are assembled under a temporary name and renamed into place after the SHA-1 check, so an interrupted run never leaves a truncated file under its real name.
+- Each item is built in a temporary sibling directory. All files and symlinks are prepared before the old directory
+  is moved aside and the new one installed; an installation error restores the old directory. Unchanged files are
+  reused by hard link, or copied locally if hard links are unavailable. Changing their executable permissions uses a
+  separate copy so a failed update does not change the previous files.
+- Downloads coordinate through a persistent `DIR/.<ITEM_ID>.lock` containing the owner's PID and an exclusive kernel
+  lock (`flock` on Linux/macOS, `LockFileEx` on Windows). The lock covers planning through installation and cleanup,
+  across clients and processes. An occupied destination is waited for, interruptibly. Process exit releases the
+  kernel lock automatically; the next owner replaces the recorded PID, even if that PID has since been reused.
+  Keep the lock file: deleting it while downloads are running would allow different processes to lock different files.
+- Cancellation is checked before installation. Once directory replacement starts it finishes or rolls back; there
+  is a brief interval between the two renames when the item directory is absent. Other downloads are locked out,
+  but readers that do not take the lock can observe that interval. This is rollback for ordinary errors, not crash
+  recovery: a killed process or power loss during installation can leave the old copy in the temporary sibling.
 - Every chunk is checked (Adler-32 and size) after it is decrypted and decompressed.
 - Manifest paths are untrusted: absolute paths and `..` components are rejected. On Windows, names Windows cannot
   represent faithfully (containing `:` or other reserved characters, device names such as `CON`, trailing dots or spaces) fail the item.

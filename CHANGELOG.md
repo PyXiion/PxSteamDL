@@ -6,6 +6,15 @@ as described in [CONTRIBUTING.md](CONTRIBUTING.md#versioning).
 
 ## [Unreleased]
 
+### Fixed
+
+- Failed updates preserve the previous item even when a file becomes a directory or a whole-file hash fails after
+  other files were verified. Items are staged separately, then installed with rollback on ordinary rename errors.
+- Cancellation during the last in-flight chunk, an up-to-date item's progress callback or a legacy request is checked
+  before installation. Legacy progress callback failures preserve the old file too.
+- Concurrent downloads of the same destination wait for a persistent `.<item id>.lock` with the owner's PID and a
+  kernel lock. Waiting supports cancellation; process exit releases the lock and the next owner replaces stale PID data.
+
 ### Added
 
 - `examples/`: programs using the whole C++, Python and asyncio API.

@@ -227,6 +227,8 @@ set(PXSTEAMDL_CORE_SOURCES
     src/client.cpp
     src/cm_packet.cpp
     src/crypto.cpp
+    src/directory_lock.cpp
+    src/directory_update.cpp
     src/downloader.cpp
     src/eresult.cpp
     src/error.cpp
@@ -319,8 +321,18 @@ if(PXSTEAMDL_BUILD_TESTS)
     enable_testing()
     include(GoogleTest)
 
+    # A separate process holds a real kernel lock; the tests terminate it to verify stale-owner recovery.
+    add_executable(pxsteamdl-lock-holder tests/lock_holder.cpp src/directory_lock.cpp src/paths.cpp)
+    target_include_directories(pxsteamdl-lock-holder PRIVATE src include)
+    target_link_libraries(pxsteamdl-lock-holder PRIVATE Threads::Threads)
+    if(WIN32)
+        target_compile_definitions(pxsteamdl-lock-holder PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+        target_sources(pxsteamdl-lock-holder PRIVATE cli/utf8.manifest)
+    endif()
+    pxsteamdl_warnings(pxsteamdl-lock-holder)
+
     # Unit tests of the internal modules (src/*.hpp). They build the core sources again, with fakes in place of
-    # src/http.cpp, src/session.cpp and src/sleep.cpp, so they need no network and no waiting.
+    # src/http.cpp, src/session.cpp and src/sleep.cpp, so they need no network or retry pauses.
     add_executable(pxsteamdl-tests
         ${PXSTEAMDL_CORE_SOURCES}
         tests/fakes/fake_http.cpp
@@ -331,6 +343,8 @@ if(PXSTEAMDL_BUILD_TESTS)
         tests/client_test.cpp
         tests/cm_packet_test.cpp
         tests/crypto_test.cpp
+        tests/directory_lock_test.cpp
+        tests/directory_update_test.cpp
         tests/eresult_test.cpp
         tests/error_test.cpp
         tests/manifest_test.cpp
@@ -349,6 +363,8 @@ if(PXSTEAMDL_BUILD_TESTS)
         target_compile_definitions(pxsteamdl-tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     endif()
     pxsteamdl_warnings(pxsteamdl-tests)
+    target_compile_definitions(pxsteamdl-tests PRIVATE PXSTEAMDL_LOCK_HOLDER_PATH="$<TARGET_FILE:pxsteamdl-lock-holder>")
+    add_dependencies(pxsteamdl-tests pxsteamdl-lock-holder)
     gtest_discover_tests(pxsteamdl-tests)
 
     # The real SleepFor(), which the fake above replaces.

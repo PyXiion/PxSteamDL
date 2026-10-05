@@ -6,6 +6,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <map>
 #include <mutex>
 #include <random>
@@ -434,6 +435,218 @@ TEST_F(ClientTest, StopRequestedBeforeTheStartCancelsEverything) {
   EXPECT_TRUE(results[0].cancelled());
   EXPECT_TRUE(m_steam.calls().empty());
   EXPECT_FALSE(fs::exists(itemDir(111)));
+}
+
+TEST_F(ClientTest, FileToDirectoryUpdateFailureKeepsTheOldFile) {
+  FakeItem item = MakeTinyItem(111);
+  item.files = {{"node", "old content", false}};
+  m_steam.addItem(item);
+  ASSERT_TRUE(download({111})[0].ok());
+  item.files = {{"node/child.txt", "new content", false}};
+  m_steam.addItem(item);
+  m_steam.setHttpHook([](const HttpCall& call) -> std::optional<detail::HttpResponse> {
+    if (call.kind == RequestKind::kChunk) return detail::HttpResponse{404, {}};
+    return std::nullopt;
+  });
+  EXPECT_FALSE(download({111})[0].ok());
+  EXPECT_TRUE(fs::is_regular_file(itemDir(111) / "node"));
+  EXPECT_EQ(ReadFile(itemDir(111) / "node"), "old content");
+}
+
+TEST_F(ClientTest, FileAndDirectoryTypesCanBeChanged) {
+  FakeItem item = MakeTinyItem(111);
+  item.files = {{"node", "first", false}};
+  m_steam.addItem(item);
+  ASSERT_TRUE(download({111})[0].ok());
+  item.files = {{"node/child.txt", "second", false}};
+  m_steam.addItem(item);
+  ASSERT_TRUE(download({111})[0].ok());
+  expectOnDisk(item);
+  item.files = {{"node", "third", false}};
+  m_steam.addItem(item);
+  ASSERT_TRUE(download({111})[0].ok());
+  expectOnDisk(item);
+}
+
+TEST_F(ClientTest, InvalidWholeFileHashKeepsEveryOldFile) {
+  FakeItem old = MakeTinyItem(111);
+  old.files = {{"a.txt", "old A", false}, {"b.txt", "old B", false}};
+  m_steam.addItem(old);
+  ASSERT_TRUE(download({111})[0].ok());
+  FakeItem updated = old;
+  updated.files[0].content = "new A";
+  updated.files[1].content = "new B";
+  updated.files[1].manifest_sha = detail::Sha1(detail::AsBytes("incorrect hash"));
+  m_steam.addItem(updated);
+  Result result = download({111}, sequential())[0];
+  EXPECT_EQ(result.error_kind, ErrorKind::kData) << result.error;
+  expectOnDisk(old);
+  EXPECT_FALSE(HasTemporaryFiles(itemDir(111)));
+}
+
+TEST_F(ClientTest, CancellationDuringTheLastChunkKeepsTheOldFile) {
+  FakeItem old = MakeTinyItem(111);
+  m_steam.addItem(old);
+  ASSERT_TRUE(download({111})[0].ok());
+  FakeItem updated = old;
+  updated.files[0].content = "new content";
+  m_steam.addItem(updated);
+  std::stop_source stop;
+  m_steam.setHttpHook([&](const HttpCall& call) -> std::optional<detail::HttpResponse> {
+    if (call.kind == RequestKind::kChunk) stop.request_stop();
+    return std::nullopt;
+  });
+  Options options = sequential();
+  options.stop = stop.get_token();
+  EXPECT_TRUE(download({111}, options)[0].cancelled());
+  expectOnDisk(old);
+}
+
+TEST_F(ClientTest, CancellationFromProgressWithNoChunksKeepsStrayFiles) {
+  FakeItem item = MakeTinyItem(111);
+  m_steam.addItem(item);
+  ASSERT_TRUE(download({111})[0].ok());
+  WriteFile(itemDir(111) / "stray.txt", "keep me");
+  std::stop_source stop;
+  Options options = sequential();
+  options.stop = stop.get_token();
+  options.on_progress = [&](const Progress&) { stop.request_stop(); };
+  EXPECT_TRUE(download({111}, options)[0].cancelled());
+  EXPECT_EQ(ReadFile(itemDir(111) / "stray.txt"), "keep me");
+}
+
+TEST_F(ClientTest, LegacyCancellationDuringTheRequestKeepsTheOldFile) {
+  m_steam.addLegacyItem(FakeLegacyItem{111, "Old mod", "a.zip", "old bytes"});
+  ASSERT_TRUE(download({111})[0].ok());
+  m_steam.addLegacyItem(FakeLegacyItem{111, "Old mod", "a.zip", "new bytes"});
+  std::stop_source stop;
+  m_steam.setHttpHook([&](const HttpCall& call) -> std::optional<detail::HttpResponse> {
+    if (call.kind == RequestKind::kLegacyFile) stop.request_stop();
+    return std::nullopt;
+  });
+  Options options = sequential();
+  options.stop = stop.get_token();
+  EXPECT_TRUE(download({111}, options)[0].cancelled());
+  EXPECT_EQ(ReadFile(itemDir(111) / "a.zip"), "old bytes");
+}
+
+TEST_F(ClientTest, LegacyProgressExceptionKeepsTheOldFileAndOtherEntries) {
+  m_steam.addLegacyItem(FakeLegacyItem{111, "Old mod", "a.zip", "old bytes"});
+  ASSERT_TRUE(download({111})[0].ok());
+  WriteFile(itemDir(111) / "other.txt", "keep me");
+  m_steam.addLegacyItem(FakeLegacyItem{111, "Old mod", "a.zip", "new bytes"});
+  Options options = sequential();
+  options.on_progress = [](const Progress&) { throw std::runtime_error("callback failed"); };
+  EXPECT_EQ(download({111}, options)[0].error_kind, ErrorKind::kOther);
+  EXPECT_EQ(ReadFile(itemDir(111) / "a.zip"), "old bytes");
+  EXPECT_EQ(ReadFile(itemDir(111) / "other.txt"), "keep me");
+  ASSERT_TRUE(download({111})[0].ok());
+  EXPECT_EQ(ReadFile(itemDir(111) / "a.zip"), "new bytes");
+  EXPECT_EQ(ReadFile(itemDir(111) / "other.txt"), "keep me");
+}
+
+#ifndef _WIN32
+TEST_F(ClientTest, StagingDoesNotReuseFilesThroughSymlinkParents) {
+  FakeItem item = MakeTinyItem(111);
+  item.files = {{"dir/file.txt", "new content", false}};
+  m_steam.addItem(item);
+  WriteFile(m_root / "outside/file.txt", "outside content");
+  fs::create_directories(itemDir(111));
+  fs::create_directory_symlink(m_root / "outside", itemDir(111) / "dir");
+  ASSERT_TRUE(download({111})[0].ok());
+  expectOnDisk(item);
+  EXPECT_FALSE(fs::is_symlink(itemDir(111) / "dir"));
+  EXPECT_EQ(ReadFile(m_root / "outside/file.txt"), "outside content");
+}
+
+TEST_F(ClientTest, ExecutablePermissionChangeDoesNotTouchTheOldFileOnFailure) {
+  FakeItem old = MakeTinyItem(111);
+  m_steam.addItem(old);
+  ASSERT_TRUE(download({111})[0].ok());
+  auto old_perms = fs::status(itemDir(111) / "a.txt").permissions();
+  FakeItem updated = old;
+  updated.files[0].executable = true;
+  updated.files.push_back({"broken.txt", "new content", false});
+  m_steam.addItem(updated);
+  m_steam.setHttpHook([](const HttpCall& call) -> std::optional<detail::HttpResponse> {
+    if (call.kind == RequestKind::kChunk) return detail::HttpResponse{404, {}};
+    return std::nullopt;
+  });
+  EXPECT_FALSE(download({111})[0].ok());
+  EXPECT_EQ(fs::status(itemDir(111) / "a.txt").permissions(), old_perms);
+  expectOnDisk(old);
+}
+#endif
+
+TEST_F(ClientTest, ConcurrentDownloadsOfOneDestinationWaitAndReuseTheFirstCopy) {
+  FakeItem item = MakeTinyItem(111);
+  m_steam.addItem(item);
+  std::promise<void> first_chunk;
+  std::promise<void> release_chunk;
+  auto release = release_chunk.get_future();
+  std::atomic<int> chunks{0};
+  m_steam.setHttpHook([&](const HttpCall& call) -> std::optional<detail::HttpResponse> {
+    if (call.kind == RequestKind::kChunk && ++chunks == 1) {
+      first_chunk.set_value();
+      if (release.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+        detail::Fail(ErrorKind::kOther, "test timed out waiting to release chunk");
+      }
+    }
+    return std::nullopt;
+  });
+  Client client;
+  std::vector<std::uint64_t> ids{111};
+  Options options = sequential();
+  auto first = std::async(std::launch::async, [&] { return client.download(ids, m_root, options)[0]; });
+  auto entered = first_chunk.get_future().wait_for(std::chrono::seconds(5));
+  EXPECT_EQ(entered, std::future_status::ready);
+  std::promise<void> second_resolved;
+  Options second_options = options;
+  second_options.on_resolved = [&](const ItemInfo&) { second_resolved.set_value(); };
+  auto second = std::async(std::launch::async, [&] { return client.download(ids, m_root, second_options)[0]; });
+  EXPECT_EQ(second_resolved.get_future().wait_for(std::chrono::seconds(5)), std::future_status::ready);
+  EXPECT_EQ(second.wait_for(milliseconds(100)), std::future_status::timeout);
+  release_chunk.set_value();
+  EXPECT_TRUE(first.get().ok());
+  Result result = second.get();
+  EXPECT_TRUE(result.ok()) << result.error;
+  EXPECT_EQ(result.downloaded_bytes, 0u);
+  EXPECT_EQ(chunks, 1);
+  expectOnDisk(item);
+}
+
+TEST_F(ClientTest, WaitingForAnOccupiedDestinationCanBeCancelled) {
+  m_steam.addItem(MakeTinyItem(111));
+  std::promise<void> first_chunk;
+  std::promise<void> release_chunk;
+  auto release = release_chunk.get_future();
+  m_steam.setHttpHook([&](const HttpCall& call) -> std::optional<detail::HttpResponse> {
+    if (call.kind == RequestKind::kChunk) {
+      first_chunk.set_value();
+      if (release.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+        detail::Fail(ErrorKind::kOther, "test timed out waiting to release chunk");
+      }
+    }
+    return std::nullopt;
+  });
+  Client client;
+  std::vector<std::uint64_t> ids{111};
+  Options options = sequential();
+  auto first = std::async(std::launch::async, [&] { return client.download(ids, m_root, options)[0]; });
+  EXPECT_EQ(first_chunk.get_future().wait_for(std::chrono::seconds(5)), std::future_status::ready);
+  std::promise<void> second_resolved;
+  std::stop_source stop;
+  Options second_options = options;
+  second_options.stop = stop.get_token();
+  second_options.on_resolved = [&](const ItemInfo&) { second_resolved.set_value(); };
+  auto second = std::async(std::launch::async, [&] { return client.download(ids, m_root, second_options)[0]; });
+  EXPECT_EQ(second_resolved.get_future().wait_for(std::chrono::seconds(5)), std::future_status::ready);
+  EXPECT_EQ(second.wait_for(milliseconds(100)), std::future_status::timeout);
+  stop.request_stop();
+  EXPECT_EQ(second.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+  release_chunk.set_value();
+  EXPECT_TRUE(second.get().cancelled());
+  EXPECT_TRUE(first.get().ok());
 }
 
 // ---- retries ----

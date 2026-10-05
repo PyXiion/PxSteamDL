@@ -23,6 +23,7 @@
 #include "cm_packet.hpp"
 #include "common.hpp"
 #include "crypto.hpp"
+#include "directory_update.hpp"
 #include "eresult.hpp"
 #include "http.hpp"
 #include "manifest.hpp"
@@ -59,27 +60,6 @@ constexpr std::uint32_t kManifestId = 3;
 constexpr std::uint32_t kResponseCode = 1;
 }  // namespace request_code_field
 
-// Replaces whatever is at path, unless it is a directory already, with an empty directory.
-void EnsureDirectory(const fs::path& path) {
-  auto status = fs::symlink_status(path);
-  if (fs::is_directory(status)) return;
-  if (fs::exists(status)) fs::remove_all(path);
-  fs::create_directory(path);
-}
-
-// Removes everything under dir whose path relative to root is not in expected.
-void Prune(const fs::path& root, const fs::path& dir, const std::set<std::string>& expected) {
-  std::vector<fs::path> children;
-  for (const auto& entry : fs::directory_iterator(dir)) children.push_back(entry.path());
-  for (const fs::path& child : children) {
-    if (!expected.contains(PathKey(ToUtf8(child.lexically_relative(root))))) {
-      fs::remove_all(child);
-    } else if (fs::is_directory(fs::symlink_status(child))) {
-      Prune(root, child, expected);
-    }
-  }
-}
-
 // Parents before children.
 std::vector<std::string> SortByDepth(const std::set<std::string>& dirs) {
   std::vector<std::string> sorted(dirs.begin(), dirs.end());
@@ -89,11 +69,6 @@ std::vector<std::string> SortByDepth(const std::set<std::string>& dirs) {
     return depth_a == depth_b ? a < b : depth_a < depth_b;
   });
   return sorted;
-}
-
-void CheckDestination(const fs::path& root) {
-  if (fs::is_symlink(fs::symlink_status(root))) Fail(ErrorKind::kFilesystem, "destination must not be a symlink");
-  fs::create_directories(root);
 }
 
 void CreateSymlink(const fs::path& root, const ManifestFile& file) {
@@ -126,22 +101,25 @@ void DownloadLegacy(ItemJob& job, const HttpConfig& config, const std::stop_toke
   if (name.empty() || name == "." || name == ".." || IsWindowsUnsafeName(ToUtf8(name))) {
     Fail("legacy item has no safe filename");
   }
-  CheckDestination(job.destination);
+  DirectoryUpdate directory(job.destination, stop);
   HttpResponse response = Retry(stop, [&] {
     HttpResponse reply = HttpRequest(item.file_url, config);
     CheckHttpStatus("legacy file", reply.status);
     return reply;
   });
+  job.downloaded = response.body.size();
+  if (stop.stop_requested()) FailCancelled();
   ManifestFile legacy;
   legacy.name = ToUtf8(name);
   legacy.size = response.body.size();
   legacy.sha = Sha1(response.body);  // commit() verifies what reached the disk against this
-  PendingFile output(legacy, job.destination / name, 1);
+  directory.copyPrevious();
+  PendingFile output(legacy, directory.staging() / name, 1);
   output.write(0, response.body);
   output.commit(kRegularPerms);
-  job.downloaded = response.body.size();
   job.unpacked = legacy.size;
   if (job.progress) job.progress({job.downloaded, job.downloaded, job.unpacked, job.unpacked});
+  directory.commit(stop);
 }
 
 struct ChunkTask {
@@ -157,7 +135,8 @@ struct ItemState {
   const std::vector<std::string>* hosts = nullptr;
   std::string chunk_prefix;
   std::vector<ManifestFile> files;
-  std::set<std::string> expected;  // PathKey of every path the item consists of
+  // Declared before pending so temporary files are closed before the workspace and lock are released.
+  std::unique_ptr<DirectoryUpdate> directory;
   std::vector<std::unique_ptr<PendingFile>> pending;
   std::vector<ChunkTask> chunks;
   std::size_t next_chunk = 0;  // next to hand out; guarded by Downloader::m_queueMutex
@@ -313,6 +292,7 @@ class Downloader::Impl {
     ItemState& state = *m_states[index];
     state.index = index;
     state.job = &job;
+    state.directory = std::make_unique<DirectoryUpdate>(job.destination, m_stop);
     fetchManifest(state, item, planner);
     prepareDirectories(state);
     queueChangedFiles(state);
@@ -345,7 +325,7 @@ class Downloader::Impl {
     state.chunk_prefix = "/depot/" + std::to_string(depot) + "/chunk/";
   }
 
-  // Records the item's paths in state.expected and creates its directories.
+  // Validates the item's paths and creates directories in its private workspace.
   static void prepareDirectories(ItemState& state) {
     std::set<std::string> declared;  // path keys of the manifest entries
     std::set<std::string> dirs;      // directories to create
@@ -353,11 +333,9 @@ class Downloader::Impl {
     auto add_directory = [&](const std::string& name) {
       dirs.insert(name);
       dir_keys.insert(PathKey(name));
-      state.expected.insert(PathKey(name));
     };
     for (const ManifestFile& file : state.files) {
       if (!declared.insert(PathKey(file.name)).second) Fail("manifest: duplicate path: " + file.name);
-      state.expected.insert(PathKey(file.name));
       if (file.isDirectory()) add_directory(file.name);
       for (fs::path parent = Utf8Path(file.name).parent_path(); !parent.empty(); parent = parent.parent_path()) {
         add_directory(ToUtf8(parent));
@@ -369,9 +347,8 @@ class Downloader::Impl {
       }
     }
 
-    const fs::path& root = state.job->destination;
-    CheckDestination(root);
-    for (const std::string& dir : SortByDepth(dirs)) EnsureDirectory(root / Utf8Path(dir));
+    const fs::path& root = state.directory->staging();
+    for (const std::string& dir : SortByDepth(dirs)) fs::create_directory(root / Utf8Path(dir));
   }
 
   // Starts a PendingFile for each regular file that differs from the manifest and lists its chunks.
@@ -379,11 +356,12 @@ class Downloader::Impl {
     for (const ManifestFile& file : state.files) {
       if (!file.isRegular()) continue;
       fs::path path = state.job->destination / Utf8Path(file.name);
-      if (IsUpToDate(path, file)) {
-        if (file.isExecutable()) fs::permissions(path, kExecPerms, fs::perm_options::add);
+      if (state.directory->hasRegularFile(file.name) && IsUpToDate(path, file)) {
+        state.directory->reuseFile(file.name, file.isExecutable());
         continue;
       }
-      auto& output = state.pending.emplace_back(std::make_unique<PendingFile>(file, path, file.chunks.size()));
+      fs::path staged = state.directory->staging() / Utf8Path(file.name);
+      auto& output = state.pending.emplace_back(std::make_unique<PendingFile>(file, staged, file.chunks.size()));
       for (const ManifestChunk& chunk : file.chunks) {
         state.chunks.push_back({output.get(), &chunk});
         state.progress.downloaded_total += chunk.compressed_size;
@@ -468,16 +446,17 @@ class Downloader::Impl {
     m_states[state.index].reset();
   }
 
-  // Moves the downloaded files into place, recreates symlinks and removes what the manifest does not list.
-  static void finalize(ItemState& state) {
+  // Finishes and verifies every file in staging before replacing any part of the previous copy.
+  void finalize(ItemState& state) const {
+    if (m_stop.stop_requested()) FailCancelled();
     for (const auto& output : state.pending) {
       output->commit(output->file().isExecutable() ? kRegularPerms | kExecPerms : kRegularPerms);
     }
-    const fs::path& root = state.job->destination;
+    const fs::path& root = state.directory->staging();
     for (const ManifestFile& file : state.files) {
       if (file.isSymlink()) CreateSymlink(root, file);
     }
-    Prune(root, root, state.expected);
+    state.directory->commit(m_stop);
   }
 
   Session& m_session;
