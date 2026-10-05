@@ -18,12 +18,12 @@ constexpr int kExitUsage = 2;
 // 128 + SIGINT, as shells report a process killed by Ctrl-C.
 constexpr int kExitInterrupted = 130;
 
-void Usage() {
+void Usage(std::FILE* out) {
   std::fputs(
-      "usage: pxsteamdl [-o DIR] [-j PARALLEL_ITEMS] [-t THREADS_PER_ITEM] ITEM_ID...\n"
-      "       pxsteamdl --version\n"
+      "usage: pxsteamdl [-o DIR] [-j PARALLEL_ITEMS] [-t THREADS_PER_ITEM] [--] ITEM_ID...\n"
+      "       pxsteamdl --version | -h | --help\n"
       "Downloads Steam Workshop items anonymously into DIR/<ITEM_ID>/ (default DIR: .)\n",
-      stderr);
+      out);
 }
 
 bool Parse(std::string_view text, auto& value) {
@@ -54,28 +54,37 @@ int main(int argc, char** argv) {
   pxsteamdl::Options options;
   std::vector<std::uint64_t> ids;
 
+  bool only_ids = false;  // after "--"
   for (int i = 1; i < argc; ++i) {
     std::string_view arg = argv[i];
     bool has_value = i + 1 < argc;
-    if (arg == "--version") {
+    if (!only_ids && (arg == "--help" || arg == "-h")) {
+      Usage(stdout);
+      return 0;
+    }
+    if (!only_ids && arg == "--version") {
       std::printf("pxsteamdl %.*s\n", static_cast<int>(pxsteamdl::Version().size()), pxsteamdl::Version().data());
       return 0;
     }
-    if (arg == "-o" && has_value) {
+    if (!only_ids && arg == "--") {
+      only_ids = true;
+    } else if (!only_ids && arg == "-o" && has_value) {
       root = argv[++i];
-    } else if (arg == "-j" && has_value && Parse(argv[i + 1], options.parallel_items)) {
+    } else if (!only_ids && arg == "-j" && has_value && Parse(argv[i + 1], options.parallel_items) &&
+               options.parallel_items > 0) {
       ++i;
-    } else if (arg == "-t" && has_value && Parse(argv[i + 1], options.threads_per_item)) {
+    } else if (!only_ids && arg == "-t" && has_value && Parse(argv[i + 1], options.threads_per_item) &&
+               options.threads_per_item > 0) {
       ++i;
     } else if (std::uint64_t id; Parse(arg, id)) {
       ids.push_back(id);
     } else {
-      Usage();
+      Usage(stderr);
       return kExitUsage;
     }
   }
   if (ids.empty()) {
-    Usage();
+    Usage(stderr);
     return kExitUsage;
   }
 

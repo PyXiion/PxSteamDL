@@ -44,7 +44,7 @@ jobs:
         run: brew install ninja
 
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DPXSTEAMDL_BUILD_TESTS=ON
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DPXSTEAMDL_BUILD_TESTS=ON -DPXSTEAMDL_BUILD_EXAMPLES=ON
 
       - name: Build
         run: cmake --build build

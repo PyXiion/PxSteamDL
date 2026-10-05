@@ -38,9 +38,9 @@ bool IsSafeHostName(std::string_view host) {
 
 }  // namespace
 
-std::vector<std::string> FetchCdnHosts(std::uint32_t app_id, const std::stop_token& stop) {
-  HttpResponse response = Retry(stop, [] {
-    HttpResponse reply = HttpRequest(kServersUrl);
+std::vector<std::string> FetchCdnHosts(std::uint32_t app_id, const HttpConfig& config, const std::stop_token& stop) {
+  HttpResponse response = Retry(stop, [&] {
+    HttpResponse reply = HttpRequest(kServersUrl, config);
     CheckHttpStatus("CDN server list", reply.status);
     return reply;
   });

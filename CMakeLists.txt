@@ -4,6 +4,7 @@ project(PxSteamDL VERSION 0.2.0 LANGUAGES CXX)
 option(PXSTEAMDL_BUILD_CLI "Build the pxsteamdl command-line tool" ${PROJECT_IS_TOP_LEVEL})
 option(PXSTEAMDL_BUILD_PYTHON "Build the Python extension module" OFF)
 option(PXSTEAMDL_BUILD_TESTS "Build the unit tests (GoogleTest)" OFF)
+option(PXSTEAMDL_BUILD_EXAMPLES "Build the programs in examples/" OFF)
 option(PXSTEAMDL_INSTALL "Generate install rules: headers, one library with its dependencies merged in, find_package files" ${PROJECT_IS_TOP_LEVEL})
 
 set(CMAKE_CXX_STANDARD 20)
@@ -228,6 +229,7 @@ set(PXSTEAMDL_CORE_SOURCES
     src/crypto.cpp
     src/downloader.cpp
     src/eresult.cpp
+    src/error.cpp
     src/manifest.cpp
     src/paths.cpp
     src/pending_file.cpp
@@ -299,6 +301,11 @@ if(PXSTEAMDL_BUILD_PYTHON)
     install(FILES ${CMAKE_CURRENT_BINARY_DIR}/_pxsteamdl.pyi DESTINATION pxsteamdl COMPONENT python)
 endif()
 
+if(PXSTEAMDL_BUILD_EXAMPLES)
+    add_executable(example-download examples/download.cpp)
+    target_link_libraries(example-download PRIVATE pxsteamdl)
+endif()
+
 if(PXSTEAMDL_BUILD_TESTS)
     CPMAddPackage(
         NAME googletest
@@ -325,6 +332,7 @@ if(PXSTEAMDL_BUILD_TESTS)
         tests/cm_packet_test.cpp
         tests/crypto_test.cpp
         tests/eresult_test.cpp
+        tests/error_test.cpp
         tests/manifest_test.cpp
         tests/paths_test.cpp
         tests/proto_test.cpp

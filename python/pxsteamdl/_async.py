@@ -19,12 +19,24 @@ class AsyncClient:
     """
 
     def __init__(self, client: Client) -> None:
+        """Wraps an existing Client; use create() to log in without blocking the event loop."""
         self._client = client
 
     @classmethod
-    async def create(cls) -> AsyncClient:
-        """Logs in to Steam anonymously in a worker thread; raises RuntimeError on failure."""
-        return cls(await asyncio.to_thread(Client))
+    async def create(
+        cls,
+        *,
+        proxy: str | None = None,
+        connect_timeout: int = 10,
+        stall_timeout: int = 30,
+    ) -> AsyncClient:
+        """Logs in to Steam anonymously in a worker thread; raises Error (a RuntimeError) on failure.
+
+        The arguments are those of Client.
+        """
+        return cls(
+            await asyncio.to_thread(Client, proxy=proxy, connect_timeout=connect_timeout, stall_timeout=stall_timeout)
+        )
 
     async def download(
         self,

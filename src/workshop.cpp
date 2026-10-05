@@ -43,10 +43,11 @@ std::uint64_t U64Field(const nlohmann::json& entry, const char* key) {
   return it != entry.end() ? ParseU64(*it) : 0;
 }
 
-Item FailedItem(std::uint64_t id, std::string error) {
+Item FailedItem(std::uint64_t id, ErrorKind kind, std::string error) {
   Item item;
   item.id = id;
   item.error = std::move(error);
+  item.error_kind = kind;
   return item;
 }
 
@@ -57,6 +58,8 @@ Item ParseItem(std::uint64_t id, const nlohmann::json& entry) {
   try {
     if (auto result = static_cast<std::int64_t>(U64Field(entry, "result")); result != kEResultOk) {
       item.error = "Steam rejected the item: " + DescribeEResult(result);
+      item.error_kind =
+          result == static_cast<std::int64_t>(EResult::kFileNotFound) ? ErrorKind::kNotFound : ErrorKind::kRejected;
       return item;
     }
     item.manifest_id = U64Field(entry, "hcontent_file");
@@ -66,6 +69,7 @@ Item ParseItem(std::uint64_t id, const nlohmann::json& entry) {
     item.filename = StringField(entry, "filename");
   } catch (const std::exception& e) {
     item.error = std::string("invalid item details: ") + e.what();
+    item.error_kind = ErrorKind::kData;
   }
   return item;
 }
@@ -80,17 +84,27 @@ std::string DetailsForm(std::span<const std::uint64_t> ids) {
 
 // Fetches the details of up to kBatchSize items; returns one Item per ID, in order. Throws if the request fails,
 // after retrying it if the failure looks transient.
-std::vector<Item> FetchBatch(std::span<const std::uint64_t> ids, const std::stop_token& stop) {
+std::vector<Item> FetchBatch(std::span<const std::uint64_t> ids, const HttpConfig& config,
+                             const std::stop_token& stop) {
   std::string form = DetailsForm(ids);
   HttpResponse response = Retry(stop, [&] {
-    HttpResponse reply = HttpRequest(kDetailsUrl, "POST", form, "application/x-www-form-urlencoded");
+    HttpResponse reply = HttpRequest(kDetailsUrl, config, "POST", form, "application/x-www-form-urlencoded");
     CheckHttpStatus("GetPublishedFileDetails", reply.status);
     return reply;
   });
 
-  auto root = nlohmann::json::parse(response.body.begin(), response.body.end());
-  const auto& details = root.at("response").at("publishedfiledetails");
-  if (!details.is_array()) Fail("GetPublishedFileDetails: response lacks publishedfiledetails array");
+  nlohmann::json root;
+  try {
+    root = nlohmann::json::parse(response.body.begin(), response.body.end());
+  } catch (const nlohmann::json::exception& e) {
+    Fail("GetPublishedFileDetails: invalid JSON: " + std::string(e.what()));
+  }
+  const nlohmann::json* found = nullptr;
+  if (auto reply = root.find("response"); reply != root.end() && reply->is_object()) {
+    if (auto list = reply->find("publishedfiledetails"); list != reply->end()) found = &*list;
+  }
+  if (!found || !found->is_array()) Fail("GetPublishedFileDetails: response lacks publishedfiledetails array");
+  const auto& details = *found;
 
   std::unordered_map<std::uint64_t, const nlohmann::json*> by_id;
   for (const auto& entry : details) {
@@ -108,7 +122,7 @@ std::vector<Item> FetchBatch(std::span<const std::uint64_t> ids, const std::stop
     if (auto found = by_id.find(id); found != by_id.end()) {
       items.push_back(ParseItem(id, *found->second));
     } else {
-      items.push_back(FailedItem(id, "not returned by Steam"));
+      items.push_back(FailedItem(id, ErrorKind::kNotFound, "not returned by Steam"));
     }
   }
   return items;
@@ -116,21 +130,21 @@ std::vector<Item> FetchBatch(std::span<const std::uint64_t> ids, const std::stop
 
 }  // namespace
 
-void FetchItems(std::span<const std::uint64_t> ids, const std::stop_token& stop,
+void FetchItems(std::span<const std::uint64_t> ids, const HttpConfig& config, const std::stop_token& stop,
                 const std::function<void(Item)>& on_item) {
   for (std::size_t first = 0; first < ids.size(); first += kBatchSize) {
     std::span<const std::uint64_t> batch = ids.subspan(first, std::min(kBatchSize, ids.size() - first));
     std::vector<Item> items;
     if (stop.stop_requested()) {
-      for (std::uint64_t id : batch) items.push_back(FailedItem(id, kCancelled));
+      for (std::uint64_t id : batch) items.push_back(FailedItem(id, ErrorKind::kCancelled, kCancelled));
     } else {
       try {
-        items = FetchBatch(batch, stop);
+        items = FetchBatch(batch, config, stop);
       } catch (const std::exception& e) {
-        std::string error =
-            e.what() == std::string_view(kCancelled) ? kCancelled : std::string("item details: ") + e.what();
+        ErrorKind kind = KindOf(e);
+        std::string error = kind == ErrorKind::kCancelled ? kCancelled : std::string("item details: ") + e.what();
         items.clear();
-        for (std::uint64_t id : batch) items.push_back(FailedItem(id, error));
+        for (std::uint64_t id : batch) items.push_back(FailedItem(id, kind, error));
       }
     }
     for (Item& item : items) on_item(std::move(item));

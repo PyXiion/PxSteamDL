@@ -19,6 +19,7 @@ int main(int argc, char** argv) {
     std::fputs("version mismatch\n", stderr);
     return 1;
   }
+  if (pxsteamdl::ErrorKindName(pxsteamdl::ErrorKind::kNone) != "none") return 1;  // error.hpp is installed too
   std::printf("%s\n", PXSTEAMDL_VERSION_STRING);
   return 0;
 }

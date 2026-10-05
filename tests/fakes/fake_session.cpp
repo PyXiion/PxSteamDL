@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
 
 namespace pxsteamdl::detail {
 
@@ -37,11 +38,17 @@ int ConnectCount() { return g_connect_count; }
 
 }  // namespace testing
 
-class Session::Impl {};
+class Session::Impl {
+ public:
+  explicit Impl(HttpConfig config) : m_config(std::move(config)) {}
+  HttpConfig m_config;
+};
 
-Session::Session() : m_impl(std::make_unique<Impl>()) {}
+Session::Session(HttpConfig config) : m_impl(std::make_unique<Impl>(std::move(config))) {}
 
 Session::~Session() = default;
+
+const HttpConfig& Session::httpConfig() const { return m_impl->m_config; }
 
 void Session::connect() { ++testing::g_connect_count; }
 

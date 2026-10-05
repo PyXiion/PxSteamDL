@@ -33,7 +33,19 @@ with tempfile.TemporaryDirectory() as tmp:
     assert resolved == ITEMS, resolved
     for result in results:
         assert result.ok, result.error
+        assert result.error_kind == pxsteamdl.ErrorKind.NONE
         assert (result.path / "About" / "About.xml").is_file()
+        assert result.downloaded_bytes > 0 and result.unpacked_bytes > 0
+
+    # A second run finds everything in place and fetches nothing; a repeated ID is answered each time.
+    again = pxsteamdl.Client().download(ITEMS + ITEMS[:1], root / "sync")
+    assert [r.item_id for r in again] == ITEMS + ITEMS[:1]
+    assert all(r.ok and r.downloaded_bytes == 0 and r.unpacked_bytes == 0 for r in again), again
+
+    # An item that does not exist is not found (or at least refused), and says so by kind, not by wording.
+    missing = pxsteamdl.Client().download([1], root / "missing")[0]
+    assert not missing.ok and missing.error_kind in (pxsteamdl.ErrorKind.NOT_FOUND, pxsteamdl.ErrorKind.REJECTED), missing
+    assert not missing.cancelled
 
     async def download_async():
         client = await pxsteamdl.AsyncClient.create()

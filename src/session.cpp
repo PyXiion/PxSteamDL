@@ -41,7 +41,6 @@ constexpr char kCmListUrl[] = "https://api.steampowered.com/ISteamDirectory/GetC
 constexpr std::size_t kMaxCmAttempts = 5;
 constexpr std::uint64_t kAnonymousSteamId = 0x01A0000000000000ULL;
 
-constexpr long kConnectTimeoutSeconds = 10;
 constexpr auto kLogonTimeout = std::chrono::seconds(10);
 constexpr auto kCallTimeout = std::chrono::seconds(30);
 constexpr int kSendPollTimeoutMs = 5000;
@@ -109,15 +108,24 @@ ReceiveStatus Receive(CURL* curl, Bytes& partial, Bytes& message) {
   return ReceiveStatus::kMessage;
 }
 
-std::vector<std::string> FetchCmEndpoints() {
-  HttpResponse response = Retry({}, [] {
-    HttpResponse reply = HttpRequest(kCmListUrl);
+std::vector<std::string> FetchCmEndpoints(const HttpConfig& config) {
+  HttpResponse response = Retry({}, [&] {
+    HttpResponse reply = HttpRequest(kCmListUrl, config);
     CheckHttpStatus("GetCMListForConnect", reply.status);
     return reply;
   });
-  auto root = nlohmann::json::parse(response.body.begin(), response.body.end());
-  const auto& servers = root.at("response").at("serverlist");
-  if (!servers.is_array()) Fail("GetCMListForConnect: invalid serverlist");
+  nlohmann::json root;
+  try {
+    root = nlohmann::json::parse(response.body.begin(), response.body.end());
+  } catch (const nlohmann::json::exception& e) {
+    Fail("GetCMListForConnect: invalid JSON: " + std::string(e.what()));
+  }
+  const nlohmann::json* found = nullptr;
+  if (auto reply = root.find("response"); reply != root.end() && reply->is_object()) {
+    if (auto list = reply->find("serverlist"); list != reply->end()) found = &*list;
+  }
+  if (!found || !found->is_array()) Fail("GetCMListForConnect: invalid serverlist");
+  const nlohmann::json& servers = *found;
 
   std::vector<std::string> endpoints;
   for (const auto& server : servers) {
@@ -163,10 +171,14 @@ LogonResult ParseLogonResponse(const Packet& packet) {
 
 class Session::Impl {
  public:
+  explicit Impl(HttpConfig config) : m_config(std::move(config)) {}
+
   ~Impl() {
     std::lock_guard lock(m_connectMutex);
     close();
   }
+
+  const HttpConfig& httpConfig() const { return m_config; }
 
   void connect() {
     std::lock_guard lock(m_connectMutex);
@@ -218,7 +230,7 @@ class Session::Impl {
 
   // Tries the CM endpoints in turn. Requires m_connectMutex and a closed session.
   void open() {
-    std::vector<std::string> endpoints = FetchCmEndpoints();
+    std::vector<std::string> endpoints = FetchCmEndpoints(m_config);
     std::string last_error = "no endpoint reachable";
     for (std::size_t i = 0; i < std::min(endpoints.size(), kMaxCmAttempts); ++i) {
       try {
@@ -276,11 +288,11 @@ class Session::Impl {
   // Returns false on a connection failure or timeout, throws on a rejected logon.
   bool logon(const std::string& url) {
     CURL* handle = curl_easy_init();
-    if (!handle) Fail("curl_easy_init failed");
+    if (!handle) Fail(ErrorKind::kOther, "curl_easy_init failed");
     curl_easy_setopt(handle, CURLOPT_URL, url.c_str());
     SetCaBundle(handle);
     curl_easy_setopt(handle, CURLOPT_CONNECT_ONLY, 2L);  // WebSocket
-    curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT, kConnectTimeoutSeconds);
+    SetProxyAndConnectTimeout(handle, m_config);
     {
       std::lock_guard lock(m_ioMutex);
       m_curl = handle;  // owned (and cleaned up on failure) by open()
@@ -422,13 +434,16 @@ class Session::Impl {
   std::atomic<bool> m_stopping{false};
   std::thread m_readerThread;
   std::thread m_heartbeatThread;
+  HttpConfig m_config;
   std::mutex m_heartbeatMutex;
   std::condition_variable m_heartbeatCv;
 };
 
-Session::Session() : m_impl(std::make_unique<Impl>()) {}
+Session::Session(HttpConfig config) : m_impl(std::make_unique<Impl>(std::move(config))) {}
 
 Session::~Session() = default;
+
+const HttpConfig& Session::httpConfig() const { return m_impl->httpConfig(); }
 
 void Session::connect() { m_impl->connect(); }
 

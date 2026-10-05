@@ -48,10 +48,10 @@ To build and run the unit tests, add `-DPXSTEAMDL_BUILD_TESTS=ON` and run `ctest
 ## CLI
 
 ```sh
-pxsteamdl [-o DIR] [-j PARALLEL_ITEMS] [-t THREADS_PER_ITEM] ITEM_ID...
+pxsteamdl [-o DIR] [-j PARALLEL_ITEMS] [-t THREADS_PER_ITEM] [--] ITEM_ID...
 ```
 
-`pxsteamdl --version` prints the version.
+`pxsteamdl --version` prints the version and `-h`/`--help` the usage (exit code 0); `--` ends the options.
 
 Each item goes into `DIR/<ITEM_ID>/`, which matches steamcmd's `steamapps/workshop/content/294100/<ITEM_ID>`.
 The exit code is 1 if any item fails.
@@ -65,14 +65,45 @@ Standalone prebuilt binaries for Linux x86_64, macOS arm64, and Windows x64 are 
 ```cpp
 #include <pxsteamdl/pxsteamdl.hpp>
 
-pxsteamdl::Client client;  // anonymous logon; throws on failure
+pxsteamdl::Client client;  // anonymous logon; throws pxsteamdl::Error on failure
 std::vector<std::uint64_t> ids{2009463077, 818773962};
 pxsteamdl::Options options;
 options.on_resolved = [](const pxsteamdl::ItemInfo& i) { /* title known, no bytes yet; called on this thread */ };
 options.on_progress = [](const pxsteamdl::Progress& p) { /* called from worker threads */ };
 for (const auto& r : client.download(ids, "mods", options))
-    if (!r.error.empty()) std::fprintf(stderr, "%llu: %s\n", (unsigned long long)r.item_id, r.error.c_str());
+    if (!r.ok()) std::fprintf(stderr, "%llu: %s\n", (unsigned long long)r.item_id, r.error.c_str());
 ```
+
+`download()` returns one `Result` per entry of `ids`, in order. A repeated ID is downloaded once (`on_resolved` is called
+once for it) and every occurrence gets the same `Result`. `Result::path` is `root/<id>` for every item, failed ones
+included; after a failure it holds the previous copy, if there was one.
+
+**Errors.** `Result::error` is a message for people; its wording may change. To decide what to do, use
+`Result::error_kind` (`ItemInfo` has it too, and `Error::kind()` for the exception of `Client`'s constructor):
+
+| `ErrorKind` | Meaning |
+|---|---|
+| `kNone` | success |
+| `kCancelled` | stopped through `Options::stop` (the message is exactly `cancelled`; `cancelled()` tests for it) |
+| `kNotFound` | Steam does not have the item |
+| `kRejected` | Steam or a CDN refused: private item, access denied, HTTP 4xx |
+| `kNetwork` | network or service failure that survived the automatic retries; trying again later may work |
+| `kData` | Steam sent data that cannot be used (malformed, checksum mismatch, unsafe path) |
+| `kFilesystem` | a local file or directory could not be written |
+| `kOther` | anything else |
+
+**Downloaded and unpacked bytes.** `Progress` and `Result` count both: `downloaded_*` is what came over the network
+(chunks as the CDN serves them, encrypted and compressed), `unpacked_*` is what was decrypted, decompressed and written
+(the size on disk). Use the first for a transfer rate and the second for a progress bar. They cover only what had to be
+fetched in this run: an item that is already up to date reports zeros.
+
+**Connection settings.** `pxsteamdl::Client(ClientOptions{...})` takes a `proxy` (not set: libcurl's environment
+variables; empty: no proxy), a `connect_timeout` and a `stall_timeout`. A `Client` can be moved.
+
+**Callbacks that throw.** An exception from `on_progress` (worker threads) fails the item it was called for
+(`error_kind` `kOther`) and the others go on; one from `on_resolved` propagates out of `download()` after the items
+under way have been stopped. In Python, exceptions from either are reported through `sys.unraisablehook` and the
+download goes on. `download()` throws `std::invalid_argument` if `parallel_items` or `threads_per_item` is 0.
 
 To cancel, pass a `std::stop_token` in `Options::stop`. Once stop is requested, in-flight chunk requests finish,
 the remaining work is skipped and every unfinished item reports `Result::error == "cancelled"`; items that already
@@ -120,17 +151,23 @@ pip install git+https://github.com/PyXiion/PxSteamDL   # or, from a checkout: pi
 ```py
 import pxsteamdl
 
-client = pxsteamdl.Client()  # anonymous logon; raises RuntimeError on failure
+client = pxsteamdl.Client()  # anonymous logon; raises pxsteamdl.Error (a RuntimeError) on failure
 
 def on_progress(p: pxsteamdl.Progress) -> None:  # called from worker threads
-    print(f"{p.item_id} {p.title}: {p.bytes_done}/{p.bytes_total}")
+    print(f"{p.item_id} {p.title}: {p.unpacked_bytes}/{p.unpacked_total}")
 
 def on_resolved(i: pxsteamdl.ItemInfo) -> None:  # once per item, before its bytes; same thread as download()
     print(f"queued {i.item_id}: {i.title}" if not i.error else f"{i.item_id}: {i.error}")
 
 for r in client.download([2009463077, 818773962], "mods", on_progress=on_progress, on_resolved=on_resolved):
-    print(r.item_id, r.title, r.path if r.ok else r.error)
+    print(r.item_id, r.title, r.path if r.ok else f"{r.error_kind.name}: {r.error}")
 ```
+
+The same names exist in Python: `Result.error_kind` is a `pxsteamdl.ErrorKind` (`NONE`, `CANCELLED`, `NOT_FOUND`,
+`REJECTED`, `NETWORK`, `DATA`, `FILESYSTEM`, `OTHER`), `Result.cancelled` and `Result.ok` are properties, and
+`Client(proxy=None, connect_timeout=10, stall_timeout=30)` takes the connection settings (`proxy=""` means no proxy).
+`pxsteamdl.Error` (a `RuntimeError` with a `kind` attribute) is what `Client()` raises when the logon fails.
+`Result`, `ItemInfo` and `Progress` can be constructed with keyword arguments, e.g. to test code that takes them.
 
 `download` releases the GIL, and one `Client` may be used from several threads.
 An exception raised by `on_progress` or `on_resolved` is reported like an exception in a thread (`sys.unraisablehook`) and does not stop the download.
@@ -140,7 +177,8 @@ The package ships type stubs.
 
 ### asyncio
 
-`AsyncClient` runs logon and downloads in worker threads, so the event loop keeps running. Several downloads may run concurrently on one client.
+`AsyncClient` runs logon and downloads in worker threads, so the event loop keeps running. `AsyncClient.create()` takes the
+arguments of `Client`; `AsyncClient(client)` wraps a `Client` you already have. Several downloads may run concurrently on one client.
 `on_progress` and `on_resolved` are called on the event loop thread.
 Cancelling the task (including via `asyncio.wait_for` timeouts) stops the download, waits until in-flight requests finish and temporary files are removed, then raises `CancelledError`.
 
@@ -152,7 +190,7 @@ async def main() -> None:
     client = await pxsteamdl.AsyncClient.create()
     harmony, rest = await asyncio.gather(
         client.download([2009463077], "mods"),
-        client.download([818773962], "mods", on_progress=lambda p: print(p.item_id, p.bytes_done)),
+        client.download([818773962], "mods", on_progress=lambda p: print(p.item_id, p.unpacked_bytes)),
     )
     try:
         await asyncio.wait_for(client.download([2016436324], "mods"), timeout=60)
@@ -161,6 +199,12 @@ async def main() -> None:
 
 asyncio.run(main())
 ```
+
+## Examples
+
+Complete programs that use the whole API are in [`examples/`](examples): `download.cpp` (C++; built with
+`-DPXSTEAMDL_BUILD_EXAMPLES=ON`), `download.py` (synchronous Python) and `download_async.py` (asyncio). Each takes a
+directory and item IDs.
 
 ## Behaviour
 
