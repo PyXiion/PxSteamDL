@@ -165,6 +165,27 @@ jobs:
           path: dist/*.tar.gz
           if-no-files-found: error
 
+  pypi:
+    name: Publish to PyPI
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [check, wheels, sdist]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          pattern: "{wheels-*,sdist}"
+          merge-multiple: true
+
+      - name: List distributions
+        run: ls -l dist
+
+      # Trusted publishing: no API token; the pending publisher on pypi.org names this workflow and the pypi environment.
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
   release:
     name: Publish Release
     if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.publish && inputs.tag_name != '')
