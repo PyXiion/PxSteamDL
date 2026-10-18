@@ -6,6 +6,13 @@ as described in [CONTRIBUTING.md](CONTRIBUTING.md#versioning).
 
 ## [Unreleased]
 
+### Fixed
+
+- On Linux/macOS, item lock files are removed on normal release, including error and cancellation unwinding.
+  Waiters validate the locked inode and reopen an unlinked file before entering; Windows keeps persistent locks.
+  A crash or failed unlink may still leave a reusable lock file. Stop older clients before upgrading: versions
+  without inode validation must not download to the same destination concurrently with this version.
+
 ## [0.3.0] - 2026-10-05
 
 ### Fixed

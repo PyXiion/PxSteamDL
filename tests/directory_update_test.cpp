@@ -15,6 +15,11 @@ namespace pxsteamdl::detail {
 namespace {
 
 namespace fs = std::filesystem;
+#ifdef _WIN32
+constexpr int kEntriesAfterRelease = 2;  // Destination and persistent lock file.
+#else
+constexpr int kEntriesAfterRelease = 1;  // Only the destination.
+#endif
 
 std::string ReadFile(const fs::path& path) {
   std::string text;
@@ -46,7 +51,7 @@ TEST_F(DirectoryUpdateTest, InstallationFailureRestoresTheRenamedOldDirectory) {
     EXPECT_THROW(update.commit({}), fs::filesystem_error);
     EXPECT_EQ(ReadFile(m_destination / "old.txt"), "old");
   }
-  EXPECT_EQ(std::distance(fs::directory_iterator(m_root), fs::directory_iterator{}), 2);
+  EXPECT_EQ(std::distance(fs::directory_iterator(m_root), fs::directory_iterator{}), kEntriesAfterRelease);
 }
 
 TEST_F(DirectoryUpdateTest, CancellationBeforeInstallationKeepsTheOldDirectory) {
@@ -72,7 +77,7 @@ TEST_F(DirectoryUpdateTest, InstallsTheNewDirectoryAndRemovesTheBackup) {
     EXPECT_EQ(ReadFile(m_destination / "new.txt"), "new");
     EXPECT_FALSE(fs::exists(m_destination / "old.txt"));
   }
-  EXPECT_EQ(std::distance(fs::directory_iterator(m_root), fs::directory_iterator{}), 2);
+  EXPECT_EQ(std::distance(fs::directory_iterator(m_root), fs::directory_iterator{}), kEntriesAfterRelease);
 }
 
 }  // namespace

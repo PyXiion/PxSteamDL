@@ -8,8 +8,9 @@
 
 namespace pxsteamdl::detail {
 
-// Locks destination's sibling .<name>.lock, waiting interruptibly. The persistent file records the last owner's
-// PID; the kernel lock, not PID liveness, determines ownership and is released even if the process crashes.
+// Locks destination's sibling .<name>.lock, waiting interruptibly. The kernel lock, not the recorded PID, determines
+// ownership and is released even if the process crashes. Linux/macOS unlink the file before releasing a validated
+// lock; waiters reopen obsolete inodes. Windows keeps the file. Do not mix with older persistent-lock clients.
 class DirectoryLock {
  public:
   DirectoryLock(const std::filesystem::path& destination, const std::stop_token& stop);

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "directory_lock.hpp"
 
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <filesystem>
@@ -11,6 +12,7 @@
 #include <stop_token>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -118,21 +120,29 @@ class DirectoryLockTest : public ::testing::Test {
   fs::path m_lockPath;
 };
 
-TEST_F(DirectoryLockTest, WritesThePidAndKeepsTheFileOnRelease) {
+TEST_F(DirectoryLockTest, WritesThePidAndCleansUpOnReleaseWhereSupported) {
   {
     DirectoryLock lock(m_destination, {});
     EXPECT_EQ(ReadPid(m_lockPath), Pid());
     EXPECT_FALSE(fs::exists(m_destination));
   }
+#ifdef _WIN32
   EXPECT_TRUE(fs::is_regular_file(m_lockPath));
   EXPECT_EQ(ReadPid(m_lockPath), Pid());
+#else
+  EXPECT_FALSE(fs::exists(m_lockPath));
+  EXPECT_TRUE(fs::is_empty(m_root));
+#endif
 }
 
 TEST_F(DirectoryLockTest, ReplacesStalePidAndDoesNotTrustAnUnlockedLivePid) {
   std::ofstream(m_lockPath) << "999999999\n";
-  { DirectoryLock lock(m_destination, {}); }
-  EXPECT_EQ(ReadPid(m_lockPath), Pid());
+  {
+    DirectoryLock lock(m_destination, {});
+    EXPECT_EQ(ReadPid(m_lockPath), Pid());
+  }
   // Even the current process's live PID must not turn an unlocked file into a lock.
+  std::ofstream(m_lockPath) << Pid() << "\n";
   DirectoryLock lock(m_destination, {});
   EXPECT_EQ(ReadPid(m_lockPath), Pid());
 }
@@ -191,6 +201,7 @@ TEST_F(DirectoryLockTest, ForcedProcessExitReleasesTheLockAndReplacesItsPid) {
     try {
       DirectoryLock lock(m_destination, stop);
       acquired.set_value();
+      while (!stop.stop_requested()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
     } catch (...) {
       acquired.set_exception(std::current_exception());
     }
@@ -200,9 +211,41 @@ TEST_F(DirectoryLockTest, ForcedProcessExitReleasesTheLockAndReplacesItsPid) {
   ASSERT_EQ(result.wait_for(kWaitTimeout), std::future_status::ready);
   EXPECT_NO_THROW(result.get());
   EXPECT_EQ(ReadPid(m_lockPath), Pid());
+  waiter.request_stop();
 }
 
 #ifndef _WIN32
+TEST_F(DirectoryLockTest, CleanupKeepsContendingOwnersExclusive) {
+  constexpr int kThreads = 8;
+  constexpr int kRounds = 100;
+  std::atomic<int> inside{0};
+  std::atomic<int> overlaps{0};
+  std::atomic<int> entered{0};
+  std::atomic<int> errors{0};
+  {
+    std::vector<std::jthread> threads;
+    for (int i = 0; i < kThreads; ++i) {
+      threads.emplace_back([&] {
+        try {
+          for (int round = 0; round < kRounds; ++round) {
+            DirectoryLock lock(m_destination, {});
+            if (inside.fetch_add(1) != 0) overlaps.fetch_add(1);
+            entered.fetch_add(1);
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
+            inside.fetch_sub(1);
+          }
+        } catch (...) {
+          errors.fetch_add(1);
+        }
+      });
+    }
+  }
+  EXPECT_EQ(errors.load(), 0);
+  EXPECT_EQ(overlaps.load(), 0);
+  EXPECT_EQ(entered.load(), kThreads * kRounds);
+  EXPECT_FALSE(fs::exists(m_lockPath));
+}
+
 TEST_F(DirectoryLockTest, RejectsASymlinkWithoutTruncatingItsTarget) {
   fs::path target = m_root / "target";
   std::ofstream(target) << "keep me";
