@@ -46,7 +46,9 @@ class DirectoryLock::Impl {
 #ifdef _WIN32
     if (m_handle != INVALID_HANDLE_VALUE) CloseHandle(m_handle);
 #else
-    if (m_fd >= 0) ::close(m_fd);
+    // Unlink before closing: waiters must verify the inode after taking the lock.
+    if (m_ownsPath) ::unlink(m_path.c_str());
+    closeFile();
 #endif
   }
 
@@ -56,11 +58,18 @@ class DirectoryLock::Impl {
     if (parent.empty()) parent = ".";
     std::filesystem::create_directories(parent);
     m_path = parent / Utf8Path("." + ToUtf8(destination.filename()) + ".lock");
-    open();
     for (;;) {
       if (stop.stop_requested()) FailCancelled();
-      if (tryLock()) break;
-      WaitForLock(stop);
+      open();
+      while (!tryLock()) WaitForLock(stop);
+#ifndef _WIN32
+      if (!isCurrent()) {
+        closeFile();  // The previous owner unlinked this inode while we waited. Reopen the current path.
+        continue;
+      }
+      m_ownsPath = true;
+#endif
+      break;
     }
     if (stop.stop_requested()) FailCancelled();
     recordPid();
@@ -129,6 +138,22 @@ class DirectoryLock::Impl {
     fail("cannot lock file", error);
   }
 
+  bool isCurrent() const {
+    struct stat opened {};
+    struct stat linked {};
+    if (fstat(m_fd, &opened) != 0) fail("cannot inspect lock file", errno);
+    if (lstat(m_path.c_str(), &linked) != 0) {
+      if (errno == ENOENT) return false;
+      fail("cannot inspect lock file", errno);
+    }
+    return opened.st_dev == linked.st_dev && opened.st_ino == linked.st_ino;
+  }
+
+  void closeFile() {
+    if (m_fd >= 0) ::close(m_fd);
+    m_fd = -1;
+  }
+
   void recordPid() {
     std::string pid = std::to_string(getpid()) + "\n";
     if (ftruncate(m_fd, 0) != 0) fail("cannot truncate lock file", errno);
@@ -142,6 +167,7 @@ class DirectoryLock::Impl {
   }
 
   int m_fd = -1;
+  bool m_ownsPath = false;
 #endif
 
   std::filesystem::path m_path;

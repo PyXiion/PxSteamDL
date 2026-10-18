@@ -215,11 +215,14 @@ directory and item IDs.
   is moved aside and the new one installed; an installation error restores the old directory. Unchanged files are
   reused by hard link, or copied locally if hard links are unavailable. Changing their executable permissions uses a
   separate copy so a failed update does not change the previous files.
-- Downloads coordinate through a persistent `DIR/.<ITEM_ID>.lock` containing the owner's PID and an exclusive kernel
-  lock (`flock` on Linux/macOS, `LockFileEx` on Windows). The lock covers planning through installation and cleanup,
-  across clients and processes. An occupied destination is waited for, interruptibly. Process exit releases the
-  kernel lock automatically; the next owner replaces the recorded PID, even if that PID has since been reused.
-  Keep the lock file: deleting it while downloads are running would allow different processes to lock different files.
+- Downloads coordinate through `DIR/.<ITEM_ID>.lock` containing the owner's PID and an exclusive kernel lock
+  (`flock` on Linux/macOS, `LockFileEx` on Windows). The lock covers planning through installation and cleanup,
+  across clients and processes. An occupied destination is waited for, interruptibly. On Linux/macOS, normal release
+  removes the file while still holding the lock; waiters verify the inode and reopen the path if it changed. Windows
+  keeps the file. Process exit releases the kernel lock automatically; after a crash, a later owner can reuse a
+  leftover file regardless of its recorded PID. Cleanup is best-effort if unlinking fails. Do not delete lock files
+  manually while downloads are running. When upgrading from persistent-lock versions (including 0.3.0), stop all
+  older downloads first: old clients do not revalidate inodes and cannot safely share a destination with new ones.
 - Cancellation is checked before installation. Once directory replacement starts it finishes or rolls back; there
   is a brief interval between the two renames when the item directory is absent. Other downloads are locked out,
   but readers that do not take the lock can observe that interval. This is rollback for ordinary errors, not crash

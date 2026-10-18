@@ -128,7 +128,8 @@ class Client {
   // kind); thread-safe. A repeated ID is downloaded once: on_resolved is called once for it and every occurrence gets
   // the same Result. Throws std::invalid_argument if parallel_items or threads_per_item is 0.
   // Downloads to the same directory wait for its kernel lock (root/.<id>.lock), with cancellation support, even
-  // across clients and processes. The persistent lock file records the last owner's PID; do not delete it.
+  // across clients and processes. The file records the owner's PID; normal release removes it on Linux/macOS,
+  // while Windows keeps it. Do not delete active lock files or share destinations with older lock implementations.
   std::vector<Result> download(std::span<const std::uint64_t> item_ids, const std::filesystem::path& root,
                                const Options& options = {});
 
