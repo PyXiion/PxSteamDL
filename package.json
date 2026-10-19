@@ -23,7 +23,10 @@
     "node/index.js",
     "node/index.d.ts",
     "node/util.js",
+    "node/prebuild.js",
+    "node/install.js",
     "node/pxsteamdl.cpp",
+    "prebuilds",
     "CMakeLists.txt",
     "cmake",
     "include",
@@ -32,10 +35,10 @@
     "COPYING.LESSER"
   ],
   "scripts": {
-    "install": "cmake-js compile --out build-node --CDPXSTEAMDL_BUILD_NODE=ON --CDPXSTEAMDL_BUILD_CLI=OFF --CDPXSTEAMDL_INSTALL=OFF",
+    "install": "node node/install.js",
     "test": "node --test node/test/api.test.js"
   },
-  "dependencies": {
+  "optionalDependencies": {
     "cmake-js": "^8.0.0",
     "node-addon-api": "^8.0.0"
   }

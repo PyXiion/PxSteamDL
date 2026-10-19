@@ -1,20 +1,29 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 'use strict';
 
+const { prebuiltPath } = require('./prebuild');
 const { toId, boundedInt, optionalFunction, guard, MAX_WORKERS } = require('./util');
 
-let native;
-try {
-  native = require('./native/pxsteamdl-addon.node');
-} catch (error) {
-  if (error.code !== 'MODULE_NOT_FOUND') throw error;
+// A build from source (node/native) wins over the addon that ships in the package (prebuilds/).
+function loadNative() {
+  const candidates = ['./native/pxsteamdl-addon.node', prebuiltPath()].filter(Boolean);
+  let failure;
+  for (const candidate of candidates) {
+    try {
+      return require(candidate);
+    } catch (error) {
+      failure ??= error;
+    }
+  }
   throw new Error(
-    'pxsteamdl: the native addon is not built. It is compiled by the package install script, which needs CMake and ' +
-      'a C++20 compiler; newer npm versions skip install scripts of dependencies until they are approved. Run ' +
+    'pxsteamdl: the native addon is not available for this platform and was not built. Building needs CMake and a ' +
+      'C++20 compiler; newer npm versions skip install scripts of dependencies until they are approved. Run ' +
       '"npm run install" in the pxsteamdl package directory.',
-    { cause: error }
+    { cause: failure }
   );
 }
+
+const native = loadNative();
 
 /** Thrown by Client.create() when the logon fails and by download() when the whole operation fails; kind says what went wrong. */
 class PxSteamDLError extends Error {

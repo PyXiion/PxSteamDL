@@ -24,6 +24,7 @@ wheelhouse/
 
 # Node.js
 node_modules/
+prebuilds/
 build-node/
 node/native/
 *.tgz

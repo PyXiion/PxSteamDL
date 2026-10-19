@@ -203,11 +203,13 @@ asyncio.run(main())
 
 ## Node.js
 
-There are no prebuilt binaries yet: installing builds the addon from source (needs CMake, a C++20 compiler and
-Node.js 18+; it is built with [cmake-js](https://github.com/cmake-js/cmake-js) and uses Node-API, so one build works
-across Node versions). The first build compiles all dependencies and takes a few minutes. Newer npm versions do not run
-the install scripts of dependencies until they are approved; if `require('pxsteamdl')` says the addon is not built,
-approve the script or run `npm run install` in `node_modules/pxsteamdl`.
+The npm package ships prebuilt addons for Linux x64 (glibc 2.28+), macOS arm64 (11.0+) and Windows x64, built by the
+release workflow; Node-API makes one binary work for every Node.js version (18+). On other platforms, and when
+installing from git or a checkout, the install script builds the addon from source (needs CMake, a C++20 compiler and
+Node.js 20.17+ or 22.9+ for [cmake-js](https://github.com/cmake-js/cmake-js); the first build compiles all
+dependencies and takes a few minutes). Newer npm versions do not run the install scripts of dependencies until they
+are approved; with a prebuilt addon that does not matter, otherwise approve the script or run `npm run install` in
+`node_modules/pxsteamdl` if `require('pxsteamdl')` says the addon is not available.
 
 ```sh
 npm install git+https://github.com/PyXiion/PxSteamDL   # or, from a checkout: npm install
