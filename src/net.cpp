@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cstring>
 #include <mutex>
+#include <thread>
+#include <vector>
 
 #include <openssl/err.h>
 #include <openssl/pem.h>
@@ -86,10 +88,25 @@ std::shared_ptr<Net> Net::acquire() {
   std::lock_guard lock(mutex);
   if (auto net = current.lock()) return net;
   // The last reference may be dropped by a coroutine on the io thread, which cannot join itself: a helper thread
-  // then does the shutdown.
+  // then does the shutdown. The helper is joined at process exit so that it cannot still be tearing down TLS state
+  // while static destructors run.
   std::shared_ptr<Net> net(new Net(), [](Net* released) {
     if (std::this_thread::get_id() == released->m_thread.get_id()) {
-      std::thread([released] { delete released; }).detach();
+      struct Reaper {
+        std::mutex mutex;
+        std::vector<std::thread> threads;
+        ~Reaper() {
+          std::vector<std::thread> done;
+          {
+            std::lock_guard lock(mutex);
+            done.swap(threads);
+          }
+          for (std::thread& thread : done) thread.join();
+        }
+      };
+      static Reaper reaper;  // first used after a Net exists, so it is destroyed before the TLS library's own cleanup
+      std::lock_guard lock(reaper.mutex);
+      reaper.threads.emplace_back([released] { delete released; });
     } else {
       delete released;
     }
