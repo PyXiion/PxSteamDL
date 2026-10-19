@@ -1,0 +1,44 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 718ef5d..ec7bab6 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -183,16 +183,22 @@ CPMAddPackage(
+ )
+ 
+ # Mozilla CA bundle (as extracted by curl), compiled in: mbedTLS cannot use the OS trust store.
++# PXSTEAMDL_CA_BUNDLE_FILE replaces it with another PEM file (a private CA for the local benchmark server).
+ set(PXSTEAMDL_CA_BUNDLE_DATE 2026-09-25)
+-CPMAddPackage(
+-    NAME cacert
+-    VERSION ${PXSTEAMDL_CA_BUNDLE_DATE}
+-    URL https://curl.se/ca/cacert-${PXSTEAMDL_CA_BUNDLE_DATE}.pem
+-    URL_HASH SHA256=a41b5d356aea97a529fe27e0f7316d2f9d946d75927476cf9cf1b90637d00505
+-    DOWNLOAD_ONLY YES
+-    DOWNLOAD_NO_EXTRACT YES
+-)
+-set(ca_bundle_pem ${cacert_SOURCE_DIR}/cacert-${PXSTEAMDL_CA_BUNDLE_DATE}.pem)
++set(PXSTEAMDL_CA_BUNDLE_FILE "" CACHE FILEPATH "Use this PEM file as the compiled-in CA bundle instead of Mozilla's")
++if(PXSTEAMDL_CA_BUNDLE_FILE)
++    set(ca_bundle_pem ${PXSTEAMDL_CA_BUNDLE_FILE})
++else()
++    CPMAddPackage(
++        NAME cacert
++        VERSION ${PXSTEAMDL_CA_BUNDLE_DATE}
++        URL https://curl.se/ca/cacert-${PXSTEAMDL_CA_BUNDLE_DATE}.pem
++        URL_HASH SHA256=a41b5d356aea97a529fe27e0f7316d2f9d946d75927476cf9cf1b90637d00505
++        DOWNLOAD_ONLY YES
++        DOWNLOAD_NO_EXTRACT YES
++    )
++    set(ca_bundle_pem ${cacert_SOURCE_DIR}/cacert-${PXSTEAMDL_CA_BUNDLE_DATE}.pem)
++endif()
+ set(ca_bundle_cpp ${CMAKE_CURRENT_BINARY_DIR}/ca_bundle.cpp)
+ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${ca_bundle_pem})
+ file(READ ${ca_bundle_pem} ca_bundle_hex HEX)
+@@ -378,3 +384,7 @@ endif()
+ if(PXSTEAMDL_INSTALL)
+     include(cmake/PxSteamDLInstall.cmake)
+ endif()
++
++# Benchmark client (added by the experiment's bench/ scripts; not part of the library).
++add_executable(bench-client ${PXSTEAMDL_BENCH_CLIENT})
++target_link_libraries(bench-client PRIVATE PxSteamDL::pxsteamdl)
