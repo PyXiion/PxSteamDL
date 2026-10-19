@@ -135,15 +135,17 @@ asio::awaitable<Exchange> RoundTrip(Connection& connection, const Url& url, cons
     co_await connection.readExact(out.data(), out.size());
   } else {
     read_to_close = true;
+    std::size_t at = 0;
     try {
       for (;;) {
-        std::size_t at = out.size();
+        at = out.size();
         out.resize(at + 64 * 1024);
         std::size_t count = co_await connection.readSome(out.data() + at, 64 * 1024);
         out.resize(at + count);
       }
     } catch (const TransientError&) {
       if (connection.timedOut()) throw;  // a stall, not the end of the body
+      out.resize(at);
     }
   }
   exchange.keep_alive = !read_to_close && head.minor_version >= 1 && head.connection.find("close") == std::string::npos;

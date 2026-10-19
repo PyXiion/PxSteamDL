@@ -4,6 +4,7 @@ project(PxSteamDL VERSION 0.4.0 LANGUAGES CXX)
 option(PXSTEAMDL_BUILD_CLI "Build the pxsteamdl command-line tool" ${PROJECT_IS_TOP_LEVEL})
 option(PXSTEAMDL_BUILD_PYTHON "Build the Python extension module" OFF)
 option(PXSTEAMDL_BUILD_TESTS "Build the unit tests (GoogleTest)" OFF)
+option(PXSTEAMDL_BUILD_BENCH "Build the benchmark client and test server in bench/" OFF)
 option(PXSTEAMDL_BUILD_EXAMPLES "Build the programs in examples/" OFF)
 option(PXSTEAMDL_INSTALL "Generate install rules: headers, one library with its dependencies merged in, find_package files" ${PROJECT_IS_TOP_LEVEL})
 
@@ -269,6 +270,10 @@ if(PXSTEAMDL_BUILD_EXAMPLES)
     target_link_libraries(example-download PRIVATE pxsteamdl)
 endif()
 
+if(PXSTEAMDL_BUILD_BENCH)
+    add_subdirectory(bench)
+endif()
+
 if(PXSTEAMDL_BUILD_TESTS)
     CPMAddPackage(
         NAME googletest
@@ -328,6 +333,13 @@ if(PXSTEAMDL_BUILD_TESTS)
     target_compile_definitions(pxsteamdl-tests PRIVATE PXSTEAMDL_LOCK_HOLDER_PATH="$<TARGET_FILE:pxsteamdl-lock-holder>")
     add_dependencies(pxsteamdl-tests pxsteamdl-lock-holder)
     gtest_discover_tests(pxsteamdl-tests)
+
+    # The real HTTP client and its asio connections, against a scripted server on the loopback interface.
+    add_executable(pxsteamdl-net-tests tests/http_test.cpp src/http.cpp src/net.cpp src/error.cpp ${ca_bundle_cpp})
+    target_include_directories(pxsteamdl-net-tests PRIVATE src include ${CMAKE_CURRENT_BINARY_DIR}/include)
+    target_link_libraries(pxsteamdl-net-tests PRIVATE GTest::gtest_main asio::asio OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
+    pxsteamdl_warnings(pxsteamdl-net-tests)
+    gtest_discover_tests(pxsteamdl-net-tests)
 
     # The real SleepFor(), which the fake above replaces.
     add_executable(pxsteamdl-sleep-tests src/sleep.cpp tests/sleep_test.cpp)

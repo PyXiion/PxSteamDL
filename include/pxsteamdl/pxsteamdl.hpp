@@ -81,8 +81,9 @@ struct Result {
 
 // Settings of the network connections of a Client.
 struct ClientOptions {
-  // The proxy for every connection, as libcurl takes it ("http://host:3128", "socks5h://host:1080"). Not set: use
-  // what libcurl finds in the environment (https_proxy, all_proxy; no_proxy). Empty: no proxy at all.
+  // Not supported by this (asio) build of the library: not set and empty both mean a direct connection, and any
+  // other value makes every request fail. (The libcurl builds took a proxy URL here and, when it was not set, the
+  // proxy variables of the environment.)
   std::optional<std::string> proxy;
   // How long to wait for a connection to be made; at least 1 second.
   std::chrono::seconds connect_timeout{10};

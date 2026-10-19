@@ -85,7 +85,15 @@ std::shared_ptr<Net> Net::acquire() {
   static std::weak_ptr<Net> current;
   std::lock_guard lock(mutex);
   if (auto net = current.lock()) return net;
-  std::shared_ptr<Net> net(new Net());
+  // The last reference may be dropped by a coroutine on the io thread, which cannot join itself: a helper thread
+  // then does the shutdown.
+  std::shared_ptr<Net> net(new Net(), [](Net* released) {
+    if (std::this_thread::get_id() == released->m_thread.get_id()) {
+      std::thread([released] { delete released; }).detach();
+    } else {
+      delete released;
+    }
+  });
   current = net;
   return net;
 }
