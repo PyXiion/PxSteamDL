@@ -8,6 +8,7 @@
 #include <deque>
 #include <exception>
 #include <functional>
+#include <future>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -18,6 +19,9 @@
 #include <utility>
 #include <vector>
 
+#include <asio.hpp>
+
+#include "async.hpp"
 #include "cdn.hpp"
 #include "chunk.hpp"
 #include "cm_packet.hpp"
@@ -92,8 +96,9 @@ void CreateSymlink(const fs::path& root, const ManifestFile& file) {
   }
 }
 
-// Downloads an item from before SteamPipe: a single file at a direct URL.
-void DownloadLegacy(ItemJob& job, const HttpConfig& config, const std::stop_token& stop) {
+// Downloads an item from before SteamPipe: a single file at a direct URL. The disk work runs on pool.
+asio::awaitable<void> DownloadLegacy(ItemJob& job, const HttpConfig& config, std::stop_token stop,
+                                     asio::thread_pool& pool) {
   const Item& item = job.item;
   std::string filename = item.filename;
   std::replace(filename.begin(), filename.end(), '\\', '/');
@@ -101,25 +106,29 @@ void DownloadLegacy(ItemJob& job, const HttpConfig& config, const std::stop_toke
   if (name.empty() || name == "." || name == ".." || IsWindowsUnsafeName(ToUtf8(name))) {
     Fail("legacy item has no safe filename");
   }
-  DirectoryUpdate directory(job.destination, stop);
-  HttpResponse response = Retry(stop, [&] {
-    HttpResponse reply = HttpRequest(item.file_url, config);
+  std::unique_ptr<DirectoryUpdate> directory =
+      co_await OnPool(pool, [&] { return std::make_unique<DirectoryUpdate>(job.destination, stop); });
+  HttpResponse response = co_await RetryAsync(stop, [&]() -> asio::awaitable<HttpResponse> {
+    HttpResponse reply = co_await HttpRequestAsync(item.file_url, config);
     CheckHttpStatus("legacy file", reply.status);
-    return reply;
+    co_return reply;
   });
   job.downloaded = response.body.size();
   if (stop.stop_requested()) FailCancelled();
-  ManifestFile legacy;
-  legacy.name = ToUtf8(name);
-  legacy.size = response.body.size();
-  legacy.sha = Sha1(response.body);  // commit() verifies what reached the disk against this
-  directory.copyPrevious();
-  PendingFile output(legacy, directory.staging() / name, 1);
-  output.write(0, response.body);
-  output.commit(kRegularPerms);
-  job.unpacked = legacy.size;
-  if (job.progress) job.progress({job.downloaded, job.downloaded, job.unpacked, job.unpacked});
-  directory.commit(stop);
+  co_await OnPool(pool, [&] {
+    ManifestFile legacy;
+    legacy.name = ToUtf8(name);
+    legacy.size = response.body.size();
+    legacy.sha = Sha1(response.body);  // commit() verifies what reached the disk against this
+    directory->copyPrevious();
+    PendingFile output(legacy, directory->staging() / name, 1);
+    output.write(0, response.body);
+    output.commit(kRegularPerms);
+    job.unpacked = legacy.size;
+    if (job.progress) job.progress({job.downloaded, job.downloaded, job.unpacked, job.unpacked});
+    directory->commit(stop);
+    directory.reset();
+  });
 }
 
 struct ChunkTask {
@@ -150,20 +159,30 @@ struct ItemState {
 
 }  // namespace
 
-// Planners resolve items into chunk tasks as they are added, and a shared worker pool fetches chunks of all items,
-// so a large item keeps every worker busy instead of only its own share.
+// Planners resolve items into chunk tasks as they are added, and a shared set of workers fetches chunks of all items,
+// so a large item keeps every worker busy instead of only its own share. Planners and workers are coroutines on the
+// session's io thread: a waiting one costs a coroutine frame, not a thread. What blocks (file locks, hashing,
+// decrypting, decompressing, writing) runs on a small thread pool and hops back to the io thread afterwards, so all
+// scheduling state below is touched by the io thread alone and needs no lock.
 class Downloader::Impl {
  public:
   Impl(Session& session, std::size_t max_jobs, unsigned planners, unsigned workers, std::stop_token stop)
       : m_session(session),
+        m_io(session.executor()),
+        m_maxJobs(max_jobs),
         m_states(max_jobs),
         m_planners(std::clamp<std::size_t>(planners, 1, std::max<std::size_t>(max_jobs, 1))),
         m_workers(std::max(1u, workers)),
         m_stopForward(stop, [this] { m_abort.request_stop(); }),
-        m_stop(m_abort.get_token()) {
+        m_stop(m_abort.get_token()),
+        m_cacheMutex(m_io),
+        m_planWake(m_io),
+        m_queueReady(m_io),
+        m_pool(PoolSize(std::max(1u, workers))) {
     m_activePlanners = m_planners;
-    for (std::size_t i = 0; i < m_workers; ++i) m_threads.emplace_back([this, i] { work(i); });
-    for (std::size_t i = 0; i < m_planners; ++i) m_threads.emplace_back([this, i] { planItems(i); });
+    m_running = m_workers + m_planners;
+    for (std::size_t i = 0; i < m_workers; ++i) spawn([this, i] { return work(i); });
+    for (std::size_t i = 0; i < m_planners; ++i) spawn([this, i] { return planItems(i); });
   }
 
   ~Impl() {
@@ -174,34 +193,63 @@ class Downloader::Impl {
   }
 
   void add(ItemJob& job) {
-    std::lock_guard lock(m_queueMutex);
-    if (m_added + m_incoming.size() >= m_states.size()) Fail(ErrorKind::kOther, "Downloader: more jobs than announced");
-    m_incoming.push_back(&job);
-    m_planWake.notify_one();
+    if (m_accepted.fetch_add(1) >= m_maxJobs) {
+      --m_accepted;
+      Fail(ErrorKind::kOther, "Downloader: more jobs than announced");
+    }
+    asio::post(m_io, [this, &job] {
+      m_incoming.push_back(&job);
+      m_planWake.notify();
+    });
   }
 
   void finish() {
-    {
-      std::lock_guard lock(m_queueMutex);
+    if (m_finished) return;
+    asio::post(m_io, [this] {
       m_closed = true;
-      m_planWake.notify_all();
-    }
-    for (std::jthread& thread : m_threads) thread.join();
+      m_planWake.notify();
+    });
+    m_done.get_future().get();
     m_finished = true;
   }
 
  private:
-  AesKey depotKey(std::uint32_t depot, std::uint32_t app_id) {
-    std::lock_guard lock(m_cacheMutex);
-    if (auto it = m_keys.find(depot); it != m_keys.end()) return it->second;
-    AesKey key = Retry(m_stop, [&] { return requestDepotKey(depot, app_id); });
-    return m_keys.emplace(depot, key).first->second;
+  // Threads for the work that blocks: about one per core, as many as there are workers at most.
+  static unsigned PoolSize(unsigned workers) {
+    unsigned cores = std::thread::hardware_concurrency();
+    return std::max(2u, std::min(workers, cores == 0 ? 4u : cores));
   }
 
-  AesKey requestDepotKey(std::uint32_t depot, std::uint32_t app_id) {
-    Bytes reply = m_session.request(emsg::kClientGetDepotDecryptionKey,
-                                    Concat({EncodeUint(depot_key_field::kRequestDepotId, depot),
-                                            EncodeUint(depot_key_field::kRequestAppId, app_id)}));
+  // Runs a planner or worker to its end; the last one to end releases finish().
+  template <class Loop>
+  void spawn(Loop loop) {
+    asio::co_spawn(
+        m_io,
+        [this, loop = std::move(loop)]() -> asio::awaitable<void> {
+          try {
+            co_await loop();
+          } catch (...) {
+            // Loops report failures through their jobs; nothing may escape into the io thread.
+          }
+          if (--m_running == 0) m_done.set_value();
+        },
+        asio::detached);
+  }
+
+  asio::awaitable<AesKey> depotKey(std::uint32_t depot, std::uint32_t app_id) {
+    co_await m_cacheMutex.lock();
+    AsyncMutex::Guard unlock(m_cacheMutex);
+    if (auto it = m_keys.find(depot); it != m_keys.end()) co_return it->second;
+    AesKey key = co_await RetryAsync(m_stop, [&]() -> asio::awaitable<AesKey> {
+      co_return co_await requestDepotKey(depot, app_id);
+    });
+    co_return m_keys.emplace(depot, key).first->second;
+  }
+
+  asio::awaitable<AesKey> requestDepotKey(std::uint32_t depot, std::uint32_t app_id) {
+    Bytes reply = co_await m_session.request(emsg::kClientGetDepotDecryptionKey,
+                                             Concat({EncodeUint(depot_key_field::kRequestDepotId, depot),
+                                                     EncodeUint(depot_key_field::kRequestAppId, app_id)}));
     AesKey key{};
     std::int64_t eresult = 0;
     bool has_key = false;
@@ -217,74 +265,83 @@ class Downloader::Impl {
     }
     if (eresult != kEResultOk) FailEResult("depot key request failed", eresult);
     if (!has_key) Fail("depot key response lacks the key");
-    return key;
+    co_return key;
   }
 
-  const std::vector<std::string>& cdnHosts(std::uint32_t app_id) {
-    std::lock_guard lock(m_cacheMutex);
-    if (auto it = m_hosts.find(app_id); it != m_hosts.end()) return it->second;
-    return m_hosts.emplace(app_id, FetchCdnHosts(app_id, m_session.httpConfig(), m_stop)).first->second;
+  asio::awaitable<const std::vector<std::string>*> cdnHosts(std::uint32_t app_id) {
+    co_await m_cacheMutex.lock();
+    AsyncMutex::Guard unlock(m_cacheMutex);
+    if (auto it = m_hosts.find(app_id); it != m_hosts.end()) co_return &it->second;
+    std::vector<std::string> hosts = co_await FetchCdnHosts(app_id, m_session.httpConfig(), m_stop);
+    co_return &m_hosts.emplace(app_id, std::move(hosts)).first->second;
   }
 
-  std::uint64_t manifestRequestCode(const Item& item, std::uint32_t depot) {
+  asio::awaitable<std::uint64_t> manifestRequestCode(const Item& item, std::uint32_t depot) {
     Bytes request =
         Concat({EncodeUint(request_code_field::kAppId, item.app_id), EncodeUint(request_code_field::kDepotId, depot),
                 EncodeUint(request_code_field::kManifestId, item.manifest_id)});
-    Bytes reply = Retry(m_stop, [&] { return m_session.rpc(kManifestRequestCodeMethod, request); });
+    Bytes reply = co_await RetryAsync(m_stop, [&]() -> asio::awaitable<Bytes> {
+      co_return co_await m_session.rpc(kManifestRequestCodeMethod, request);
+    });
     std::uint64_t code = 0;
     ProtoReader reader(reply);
     while (auto field = reader.next()) {
       if (field->is(request_code_field::kResponseCode, WireType::kVarint)) code = field->integer;
     }
     if (!code) Fail(ErrorKind::kRejected, "manifest request code is zero");
-    return code;
+    co_return code;
   }
 
   // Takes the next added job once fewer than kOpenItemsPerPlanner * m_planners items are open; nullptr once no
   // more jobs follow.
-  ItemJob* nextJob(std::size_t& index) {
-    std::unique_lock lock(m_queueMutex);
-    m_planWake.wait(lock,
-                    [&] { return m_incoming.empty() ? m_closed : m_openItems < kOpenItemsPerPlanner * m_planners; });
-    if (m_incoming.empty()) return nullptr;
+  asio::awaitable<ItemJob*> nextJob(std::size_t& index) {
+    while (m_incoming.empty() ? !m_closed : m_openItems >= kOpenItemsPerPlanner * m_planners) {
+      co_await m_planWake.wait();
+    }
+    if (m_incoming.empty()) co_return nullptr;
     ItemJob* job = m_incoming.front();
     m_incoming.pop_front();
     index = m_added++;
     ++m_openItems;
-    return job;
+    co_return job;
   }
 
-  void planItems(std::size_t planner) {
+  asio::awaitable<void> planItems(std::size_t planner) {
     std::size_t index = 0;
-    while (ItemJob* job = nextJob(index)) {
+    while (ItemJob* job = co_await nextJob(index)) {
       bool queued = false;
+      bool failed = false;
       try {
-        queued = plan(*job, index, planner);
+        queued = co_await plan(*job, index, planner);
       } catch (const std::exception& e) {
         job->error = e.what();
         job->error_kind = KindOf(e);
-        m_states[index].reset();
+        failed = true;
       }
+      if (failed) co_await release(index);
       if (!queued) closeItem();
     }
-    std::lock_guard lock(m_queueMutex);
-    if (--m_activePlanners == 0) m_queueReady.notify_all();
+    if (--m_activePlanners == 0) m_queueReady.notify();
   }
 
   void closeItem() {
-    std::lock_guard lock(m_queueMutex);
     --m_openItems;
-    m_planWake.notify_all();
+    m_planWake.notify();
+  }
+
+  // Destroys the item's state (removing its temporary files and workspace) away from the io thread.
+  asio::awaitable<void> release(std::size_t index) {
+    if (m_states[index]) co_await OnPool(m_pool, [&] { m_states[index].reset(); });
   }
 
   // Returns whether chunk tasks were queued; otherwise the item is already complete.
-  bool plan(ItemJob& job, std::size_t index, std::size_t planner) {
+  asio::awaitable<bool> plan(ItemJob& job, std::size_t index, std::size_t planner) {
     if (m_stop.stop_requested()) FailCancelled();
     const Item& item = job.item;
     if (job.destination.empty()) Fail(ErrorKind::kOther, "download destination is empty");
     if (!item.file_url.empty() && item.manifest_id == 0) {
-      DownloadLegacy(job, m_session.httpConfig(), m_stop);
-      return false;
+      co_await DownloadLegacy(job, m_session.httpConfig(), m_stop, m_pool);
+      co_return false;
     }
     if (!item.manifest_id || !item.app_id) Fail(ErrorKind::kRejected, "item has no SteamPipe manifest or app ID");
 
@@ -292,36 +349,41 @@ class Downloader::Impl {
     ItemState& state = *m_states[index];
     state.index = index;
     state.job = &job;
-    state.directory = std::make_unique<DirectoryUpdate>(job.destination, m_stop);
-    fetchManifest(state, item, planner);
-    prepareDirectories(state);
-    queueChangedFiles(state);
+    state.directory = co_await OnPool(m_pool, [&] { return std::make_unique<DirectoryUpdate>(job.destination, m_stop); });
+    co_await fetchManifest(state, item, planner);
+    co_await OnPool(m_pool, [&] {
+      prepareDirectories(state);
+      queueChangedFiles(state);
+    });
 
     if (state.chunks.empty()) {
-      if (job.progress) job.progress({});
-      finish(state);
-      return false;
+      co_await OnPool(m_pool, [&] {
+        if (job.progress) job.progress({});
+      });
+      co_await finish(state);
+      co_return false;
     }
     if (m_stop.stop_requested()) FailCancelled();
     state.remaining = state.chunks.size();
-    std::lock_guard lock(m_queueMutex);
     m_ready.push_back(&state);
-    m_queueReady.notify_all();
-    return true;
+    m_queueReady.notify();
+    co_return true;
   }
 
-  void fetchManifest(ItemState& state, const Item& item, std::size_t planner) {
+  asio::awaitable<void> fetchManifest(ItemState& state, const Item& item, std::size_t planner) {
     // Workshop content lives in the depot with the app's ID.
     std::uint32_t depot = item.app_id;
-    state.key = depotKey(depot, item.app_id);
-    std::uint64_t code = manifestRequestCode(item, depot);
-    state.hosts = &cdnHosts(item.app_id);
+    state.key = co_await depotKey(depot, item.app_id);
+    std::uint64_t code = co_await manifestRequestCode(item, depot);
+    state.hosts = co_await cdnHosts(item.app_id);
     std::string path = "/depot/" + std::to_string(depot) + "/manifest/" + std::to_string(item.manifest_id) + "/" +
                        std::to_string(kManifestVersion) + "/" + std::to_string(code);
     std::size_t host = planner;
-    state.files = FetchFromCdn(*state.hosts, path, host, m_session.httpConfig(), m_stop, [&](const Bytes& zip) {
-      return ParseManifest(zip, state.key, depot, item.manifest_id);
-    });
+    state.files = co_await FetchFromCdn(
+        *state.hosts, path, host, m_session.httpConfig(), m_stop,
+        [&](Bytes zip) -> asio::awaitable<std::vector<ManifestFile>> {
+          co_return co_await OnPool(m_pool, [&] { return ParseManifest(zip, state.key, depot, item.manifest_id); });
+        });
     state.chunk_prefix = "/depot/" + std::to_string(depot) + "/chunk/";
   }
 
@@ -371,10 +433,9 @@ class Downloader::Impl {
   }
 
   // Takes the next chunk to fetch, waiting for one; nullptr once all items are planned and handed out.
-  ItemState* nextTask(ChunkTask& task) {
-    std::unique_lock lock(m_queueMutex);
-    m_queueReady.wait(lock, [&] { return !m_ready.empty() || m_activePlanners == 0; });
-    if (m_ready.empty()) return nullptr;
+  asio::awaitable<ItemState*> nextTask(ChunkTask& task) {
+    while (m_ready.empty() && m_activePlanners != 0) co_await m_queueReady.wait();
+    if (m_ready.empty()) co_return nullptr;
     ItemState* item = m_ready.front();
     m_ready.pop_front();
     task = item->chunks[item->next_chunk++];
@@ -382,23 +443,18 @@ class Downloader::Impl {
     if (item->next_chunk < item->chunks.size()) {
       m_ready.insert(m_ready.begin() + std::min(m_planners - 1, m_ready.size()), item);
     }
-    return item;
+    co_return item;
   }
 
-  void work(std::size_t worker) {
+  asio::awaitable<void> work(std::size_t worker) {
     std::size_t host = worker;  // each worker sticks to one CDN host and moves on only after a failure
     ChunkTask task;
-    while (ItemState* item = nextTask(task)) {
+    while (ItemState* item = co_await nextTask(task)) {
       ItemState& state = *item;
       if (!state.failed) {
         try {
-          std::uint64_t downloaded = fetchChunk(state, task, host);
-          std::lock_guard lock(state.mutex);
-          state.progress.downloaded += downloaded;
-          state.progress.unpacked += task.chunk->original_size;
-          if (state.job->progress) state.job->progress(state.progress);
+          co_await fetchChunk(state, task, host);
         } catch (const std::exception& e) {
-          std::lock_guard lock(state.mutex);
           if (!state.failed) {
             state.error = e.what();
             state.error_kind = KindOf(e);
@@ -407,30 +463,43 @@ class Downloader::Impl {
         }
       }
       if (--state.remaining == 0) {
-        finish(state);
+        co_await finish(state);
         closeItem();
       }
     }
   }
 
-  // Fetches, decodes and writes a chunk; returns the number of bytes that came over the network.
-  std::uint64_t fetchChunk(const ItemState& state, const ChunkTask& task, std::size_t& host) const {
+  // Fetches a chunk, then decrypts, decompresses and writes it on the pool, and reports its progress.
+  asio::awaitable<void> fetchChunk(ItemState& state, const ChunkTask& task, std::size_t& host) {
     const ManifestChunk& chunk = *task.chunk;
     std::uint64_t downloaded = 0;
-    Bytes data = FetchFromCdn(*state.hosts, state.chunk_prefix + ToHex(chunk.sha), host, m_session.httpConfig(), m_stop,
-                              [&](const Bytes& body) {
-                                downloaded = body.size();
-                                return DecodeChunk(body, state.key, chunk);
-                              });
-    task.output->write(chunk.offset, data);  // a local write error is not worth retrying on another host
-    return downloaded;
+    // A body that fails to decode is fetched from another host; a failure to write it or to report it is not.
+    std::exception_ptr late_error;
+    co_await FetchFromCdn(*state.hosts, state.chunk_prefix + ToHex(chunk.sha), host, m_session.httpConfig(), m_stop,
+                          [&](Bytes body) -> asio::awaitable<bool> {
+                            downloaded = body.size();
+                            co_return co_await OnPool(m_pool, [&]() -> bool {
+                              Bytes data = DecodeChunk(body, state.key, chunk);
+                              try {
+                                task.output->write(chunk.offset, data);
+                                std::lock_guard lock(state.mutex);
+                                state.progress.downloaded += downloaded;
+                                state.progress.unpacked += chunk.original_size;
+                                if (state.job->progress) state.job->progress(state.progress);
+                              } catch (...) {
+                                late_error = std::current_exception();
+                              }
+                              return true;
+                            });
+                          });
+    if (late_error) std::rethrow_exception(late_error);
   }
 
-  // Runs on the thread that completed the item's last chunk (or its planner when nothing was needed).
-  void finish(ItemState& state) {
+  // Runs when the item's last chunk is done (or its planner when nothing was needed).
+  asio::awaitable<void> finish(ItemState& state) {
     if (!state.failed) {
       try {
-        finalize(state);
+        co_await OnPool(m_pool, [&] { finalize(state); });
       } catch (const std::exception& e) {
         state.error = e.what();
         state.error_kind = KindOf(e);
@@ -443,7 +512,7 @@ class Downloader::Impl {
       state.job->error = state.error;
       state.job->error_kind = state.error_kind;
     }
-    m_states[state.index].reset();
+    co_await release(state.index);
   }
 
   // Finishes and verifies every file in staging before replacing any part of the previous copy.
@@ -460,6 +529,9 @@ class Downloader::Impl {
   }
 
   Session& m_session;
+  asio::any_io_executor m_io;
+  std::size_t m_maxJobs;
+  std::atomic<std::size_t> m_accepted{0};  // add() calls, checked on the calling thread
   // Indexed in the order jobs are taken by planners.
   std::vector<std::unique_ptr<ItemState>> m_states;
   std::size_t m_planners;
@@ -469,13 +541,13 @@ class Downloader::Impl {
   std::stop_callback<std::function<void()>> m_stopForward;
   std::stop_token m_stop;
 
-  std::mutex m_cacheMutex;  // guards m_keys and m_hosts
+  AsyncMutex m_cacheMutex;  // guards m_keys and m_hosts
   std::map<std::uint32_t, AesKey> m_keys;
   std::map<std::uint32_t, std::vector<std::string>> m_hosts;
 
-  std::mutex m_queueMutex;  // guards everything below but the threads
-  std::condition_variable m_planWake;
-  std::condition_variable m_queueReady;
+  // Everything below is touched on the io thread only.
+  Signal m_planWake;
+  Signal m_queueReady;
   // Added jobs no planner has taken yet.
   std::deque<ItemJob*> m_incoming;
   std::size_t m_added = 0;  // jobs taken by planners
@@ -486,10 +558,12 @@ class Downloader::Impl {
   std::deque<ItemState*> m_ready;
   std::size_t m_activePlanners = 0;
   std::size_t m_openItems = 0;  // planned but not finished; bounds open temporary files
+  std::size_t m_running = 0;    // planner and worker coroutines still going
+  std::promise<void> m_done;    // set when the last of them has ended
 
   bool m_finished = false;
-  // Last, so the threads are joined before the state they use is destroyed.
-  std::vector<std::jthread> m_threads;
+  // Last, so its threads are joined before the state they use is destroyed.
+  asio::thread_pool m_pool;
 };
 
 Downloader::Downloader(Session& session, std::size_t max_jobs, unsigned parallel_items, unsigned threads_per_item,

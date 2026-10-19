@@ -5,6 +5,8 @@
 #include <chrono>
 #include <stop_token>
 
+#include <asio/awaitable.hpp>
+
 #include "common.hpp"
 #include "sleep.hpp"
 
@@ -30,6 +32,20 @@ auto Retry(const std::stop_token& stop, Attempt attempt) -> decltype(attempt()) 
       if (failed_attempts >= kMaxAttempts) throw;
       if (!SleepFor(BackoffDelay(failed_attempts), stop)) FailCancelled();
     }
+  }
+}
+
+// Retry() for coroutines: attempt() returns an awaitable, and the pauses do not block the io thread.
+template <class Attempt>
+auto RetryAsync(std::stop_token stop, Attempt attempt) -> decltype(attempt()) {
+  for (int failed_attempts = 1;; ++failed_attempts) {
+    if (stop.stop_requested()) FailCancelled();
+    try {
+      co_return co_await attempt();
+    } catch (const TransientError&) {
+      if (failed_attempts >= kMaxAttempts) throw;
+    }
+    if (!co_await SleepForAsync(BackoffDelay(failed_attempts), stop)) FailCancelled();
   }
 }
 

@@ -38,11 +38,12 @@ bool IsSafeHostName(std::string_view host) {
 
 }  // namespace
 
-std::vector<std::string> FetchCdnHosts(std::uint32_t app_id, const HttpConfig& config, const std::stop_token& stop) {
-  HttpResponse response = Retry(stop, [&] {
-    HttpResponse reply = HttpRequest(kServersUrl, config);
+asio::awaitable<std::vector<std::string>> FetchCdnHosts(std::uint32_t app_id, HttpConfig config,
+                                                        std::stop_token stop) {
+  HttpResponse response = co_await RetryAsync(stop, [&]() -> asio::awaitable<HttpResponse> {
+    HttpResponse reply = co_await HttpRequestAsync(kServersUrl, config);
     CheckHttpStatus("CDN server list", reply.status);
-    return reply;
+    co_return reply;
   });
   try {
     auto root = nlohmann::json::parse(response.body.begin(), response.body.end());
@@ -53,7 +54,7 @@ std::vector<std::string> FetchCdnHosts(std::uint32_t app_id, const HttpConfig& c
       if (IsSafeHostName(host)) hosts.push_back(std::move(host));
     }
     if (hosts.empty()) Fail("CDN server list: no HTTPS SteamCache/CDN servers");
-    return hosts;
+    co_return hosts;
   } catch (const nlohmann::json::exception& e) {
     Fail("CDN server list: invalid JSON: " + std::string(e.what()));
   }

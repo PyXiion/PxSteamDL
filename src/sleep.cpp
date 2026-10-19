@@ -2,7 +2,10 @@
 #include "sleep.hpp"
 
 #include <condition_variable>
+#include <memory>
 #include <mutex>
+
+#include <asio.hpp>
 
 namespace pxsteamdl::detail {
 
@@ -16,6 +19,16 @@ bool SleepFor(std::chrono::milliseconds duration, const std::stop_token& stop) {
   });
   std::unique_lock lock(mutex);
   return !wake.wait_for(lock, duration, [&] { return stop.stop_requested(); });
+}
+
+asio::awaitable<bool> SleepForAsync(std::chrono::milliseconds duration, std::stop_token stop) {
+  auto executor = co_await asio::this_coro::executor;
+  auto timer = std::make_shared<asio::steady_timer>(executor, duration);
+  // The callback may run on any thread, so it only posts the cancellation to the executor.
+  std::stop_callback on_stop(stop, [timer, executor] { asio::post(executor, [timer] { timer->cancel(); }); });
+  std::error_code cancelled;
+  co_await timer->async_wait(asio::redirect_error(asio::use_awaitable, cancelled));
+  co_return !stop.stop_requested();
 }
 
 }  // namespace pxsteamdl::detail

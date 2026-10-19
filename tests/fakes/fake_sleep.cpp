@@ -33,4 +33,8 @@ bool SleepFor(std::chrono::milliseconds duration, const std::stop_token& stop) {
   return !stop.stop_requested();
 }
 
+asio::awaitable<bool> SleepForAsync(std::chrono::milliseconds duration, std::stop_token stop) {
+  co_return SleepFor(duration, stop);
+}
+
 }  // namespace pxsteamdl::detail

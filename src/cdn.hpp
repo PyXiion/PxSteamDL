@@ -11,6 +11,8 @@
 #include <utility>
 #include <vector>
 
+#include <asio/awaitable.hpp>
+
 #include "common.hpp"
 #include "http.hpp"
 #include "retry.hpp"
@@ -19,16 +21,18 @@ namespace pxsteamdl::detail {
 
 // Returns the HTTPS-capable SteamCache/CDN hosts that may serve app_id; throws if there are none. Retries the request
 // like Retry() does.
-std::vector<std::string> FetchCdnHosts(std::uint32_t app_id, const HttpConfig& config, const std::stop_token& stop);
+asio::awaitable<std::vector<std::string>> FetchCdnHosts(std::uint32_t app_id, HttpConfig config, std::stop_token stop);
 
 // GETs path from the hosts in turn, starting at hosts[host % size] and leaving host at the one that answered.
-// decode(Bytes) turns the body into the result and throws to reject it, which moves on to the next host like an HTTP
-// error does. After a transient failure (429, 5xx, a network error) it also pauses, with a growing delay, since
+// decode(Bytes) returns an awaitable of the result (so it can move the work to another thread) and throws to reject
+// the body, which moves on to the next host like an HTTP error does. After a transient failure (429, 5xx, a network error) it also pauses, with a growing delay, since
 // every host may be in the same trouble; other failures (say, 404 on one host) move on at once. Throws kCancelled
 // once stop is requested, or after a few failed attempts an Error with the kind of the last failure.
+// hosts, path and host must outlive the call.
 template <class Decode>
 auto FetchFromCdn(const std::vector<std::string>& hosts, const std::string& path, std::size_t& host,
-                  const HttpConfig& config, const std::stop_token& stop, Decode decode) {
+                  const HttpConfig& config, std::stop_token stop, Decode decode)
+    -> decltype(decode(std::declval<Bytes>())) {
   constexpr std::size_t kMaxCdnAttempts = 6;
   std::string last_error;
   ErrorKind last_kind = ErrorKind::kRejected;
@@ -38,8 +42,8 @@ auto FetchFromCdn(const std::vector<std::string>& hosts, const std::string& path
     const std::string& name = hosts[host % hosts.size()];
     bool transient = false;
     try {
-      HttpResponse response = HttpRequest("https://" + name + path, config);
-      if (response.status == 200) return decode(std::move(response.body));
+      HttpResponse response = co_await HttpRequestAsync("https://" + name + path, config);
+      if (response.status == 200) co_return co_await decode(std::move(response.body));
       last_error = name + ": HTTP " + std::to_string(response.status);
       transient = IsTransientHttpStatus(response.status);
       last_kind = transient ? ErrorKind::kNetwork : ErrorKind::kRejected;
@@ -51,7 +55,7 @@ auto FetchFromCdn(const std::vector<std::string>& hosts, const std::string& path
       last_error = name + ": " + e.what();
       last_kind = KindOf(e);
     }
-    if (transient && attempt + 1 < attempts && !SleepFor(BackoffDelay(static_cast<int>(attempt) + 1), stop)) {
+    if (transient && attempt + 1 < attempts && !co_await SleepForAsync(BackoffDelay(static_cast<int>(attempt) + 1), stop)) {
       FailCancelled();
     }
   }

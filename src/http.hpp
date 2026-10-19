@@ -1,22 +1,30 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
-// Blocking HTTPS requests over libcurl with the compiled-in CA bundle.
+// HTTP(S) requests over asio with the compiled-in CA bundle: coroutines for the downloader, a blocking wrapper for the
+// rest.
 #pragma once
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+
+#include <asio/awaitable.hpp>
 
 #include "common.hpp"
 
 namespace pxsteamdl::detail {
 
 // Network settings of a Client (ClientOptions), used by every request and by the CM connection.
+class Net;
+
 struct HttpConfig {
-  // nullopt: whatever libcurl picks up from the environment (https_proxy, all_proxy, ...); empty: no proxy.
+  // Not supported by the asio backend: nullopt and empty both mean no proxy, anything else is refused.
   std::optional<std::string> proxy;
   long connect_timeout_seconds = 10;
-  // A transfer slower than 1 byte/s for this long is aborted.
+  // A transfer that moves no byte for this long is aborted.
   long stall_timeout_seconds = 30;
+  // The io thread and connection pool; set by Session, acquired on first use if empty.
+  std::shared_ptr<Net> net;
 };
 
 struct HttpResponse {
@@ -25,7 +33,12 @@ struct HttpResponse {
 };
 
 // Performs a GET or POST request; throws on a transport error (a TransientError if trying again may help), not on an
-// HTTP error status. Reuses one connection cache per thread.
+// HTTP error status. Follows redirects and reuses keep-alive connections. The coroutine must run on the io thread
+// (Session::executor()); its arguments are copied, so temporaries are fine.
+asio::awaitable<HttpResponse> HttpRequestAsync(std::string url, HttpConfig config, std::string method = "GET",
+                                               std::string body = {}, std::string content_type = {});
+
+// The same, blocking the calling thread.
 HttpResponse HttpRequest(std::string_view url, const HttpConfig& config, std::string_view method = "GET",
                          std::string_view body = {}, std::string_view content_type = {});
 
@@ -39,12 +52,5 @@ inline void CheckHttpStatus(std::string_view what, long status) {
   if (IsTransientHttpStatus(status)) FailTransient(message);
   Fail(ErrorKind::kRejected, message);
 }
-
-// Makes a curl easy handle (CURL*) trust the Mozilla CA bundle compiled into the library; mbedTLS has no access
-// to the OS trust store. Must be set again after curl_easy_reset().
-void SetCaBundle(void* curl);
-
-// Applies the proxy and the connect timeout of config to a curl easy handle (CURL*).
-void SetProxyAndConnectTimeout(void* curl, const HttpConfig& config);
 
 }  // namespace pxsteamdl::detail

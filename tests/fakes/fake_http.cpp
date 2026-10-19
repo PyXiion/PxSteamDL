@@ -5,6 +5,10 @@
 #include <mutex>
 #include <string>
 
+#include <asio.hpp>
+
+#include "fake_pool.hpp"
+
 namespace pxsteamdl::detail {
 
 namespace testing {
@@ -43,6 +47,15 @@ HttpResponse HttpRequest(std::string_view url, const HttpConfig& config, std::st
   }
   if (!handler) Fail("unexpected HTTP request: " + std::string(method) + " " + std::string(url));
   return (*handler)(url, method, body);  // not under the lock: handlers run concurrently
+}
+
+asio::awaitable<HttpResponse> HttpRequestAsync(std::string url, HttpConfig config, std::string method, std::string body,
+                                               std::string content_type) {
+  // Handlers may block, so they run on the fakes' pool; the coroutine resumes on its own executor afterwards.
+  co_return co_await asio::co_spawn(
+      testing::FakePool(),
+      [&]() -> asio::awaitable<HttpResponse> { co_return HttpRequest(url, config, method, body, content_type); },
+      asio::use_awaitable);
 }
 
 }  // namespace pxsteamdl::detail

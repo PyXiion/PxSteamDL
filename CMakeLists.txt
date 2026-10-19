@@ -116,83 +116,41 @@ if(WIN32)
     # threading_alt.h, included by every mbedTLS consumer (mbedtls/threading.h).
     target_include_directories(mbedcrypto SYSTEM PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/cmake/mbedtls)
 endif()
-# Picked up by curl's FindMbedTLS instead of pkg-config/system search.
-set(MBEDTLS_INCLUDE_DIR ${mbedtls_SOURCE_DIR}/include)
-set(MBEDTLS_LIBRARY mbedtls)
-set(MBEDX509_LIBRARY mbedx509)
-set(MBEDCRYPTO_LIBRARY mbedcrypto)
-# curl would try_compile against the not-yet-built mbedcrypto; the probe only gates NTLM, which is disabled.
-set(HAVE_MBEDTLS_DES_CRYPT_ECB 0)
-# No build-host CA paths: the bundle below is the only trust store. These are cache entries, not CPM OPTIONS,
-# because curl clears the "none" cache value and OPTIONS would leave a literal "none" behind.
-set(CURL_CA_BUNDLE none CACHE STRING "")
-set(CURL_CA_PATH none CACHE STRING "")
 
+# Standalone asio (header-only) drives all network I/O; TLS goes through OpenSSL (asio::ssl). mbedTLS stays only for
+# the AES and SHA-1 primitives in crypto.cpp.
 CPMAddPackage(
-    NAME curl
-    VERSION 8.22.0
-    URL https://github.com/curl/curl/releases/download/curl-8_22_0/curl-8.22.0.tar.xz
-    URL_HASH SHA256=f7ef3ae8a22e521f289803fe93543eb64c329b58aa73a9e224dfd915a2a5f4f7
-    EXCLUDE_FROM_ALL YES
-    SYSTEM YES
-    OPTIONS
-        "BUILD_CURL_EXE OFF"
-        "BUILD_STATIC_LIBS ON"
-        "BUILD_LIBCURL_DOCS OFF"
-        "BUILD_MISC_DOCS OFF"
-        "ENABLE_CURL_MANUAL OFF"
-        "BUILD_TESTING OFF"
-        "BUILD_EXAMPLES OFF"
-        "CURL_DISABLE_INSTALL ON"
-        "CURL_ENABLE_EXPORT_TARGET OFF"
-        "PICKY_COMPILER OFF"
-        "CURL_USE_PKGCONFIG OFF"
-        "CURL_USE_CMAKECONFIG OFF"
-        "CURL_USE_MBEDTLS ON"
-        "CURL_USE_OPENSSL OFF"
-        "CURL_ZLIB ON"
-        "CURL_ZSTD ON"
-        "CURL_BROTLI OFF"
-        "USE_NGHTTP2 OFF"
-        "USE_LIBIDN2 OFF"
-        "USE_WIN32_IDN OFF"
-        "USE_APPLE_IDN OFF"
-        "CURL_USE_LIBPSL OFF"
-        "CURL_USE_LIBSSH2 OFF"
-        "CURL_USE_LIBSSH OFF"
-        "CURL_USE_GSSAPI OFF"
-        "ENABLE_UNIX_SOCKETS OFF"
-        "CURL_DISABLE_DICT ON"
-        "CURL_DISABLE_FILE ON"
-        "CURL_DISABLE_FTP ON"
-        "CURL_DISABLE_GOPHER ON"
-        "CURL_DISABLE_IMAP ON"
-        "CURL_DISABLE_IPFS ON"
-        "CURL_DISABLE_LDAP ON"
-        "CURL_DISABLE_LDAPS ON"
-        "CURL_DISABLE_MQTT ON"
-        "CURL_DISABLE_POP3 ON"
-        "CURL_DISABLE_RTSP ON"
-        "CURL_DISABLE_SMTP ON"
-        "CURL_DISABLE_TELNET ON"
-        "CURL_DISABLE_TFTP ON"
-        "CURL_DISABLE_COOKIES ON"
-        "CURL_DISABLE_MIME ON"
-        "CURL_DISABLE_NETRC ON"
-        "CURL_DISABLE_WEBSOCKETS OFF"
-)
-
-# Mozilla CA bundle (as extracted by curl), compiled in: mbedTLS cannot use the OS trust store.
-set(PXSTEAMDL_CA_BUNDLE_DATE 2026-09-25)
-CPMAddPackage(
-    NAME cacert
-    VERSION ${PXSTEAMDL_CA_BUNDLE_DATE}
-    URL https://curl.se/ca/cacert-${PXSTEAMDL_CA_BUNDLE_DATE}.pem
-    URL_HASH SHA256=a41b5d356aea97a529fe27e0f7316d2f9d946d75927476cf9cf1b90637d00505
+    NAME asio
+    VERSION 1.34.2
+    URL "https://sourceforge.net/projects/asio/files/asio/1.34.2%20%28Stable%29/asio-1.34.2.tar.gz/download"
+    URL_HASH SHA256=30ab18dc58b864f4087967a47b2645c34090b419faab724598dcea07feb84193
     DOWNLOAD_ONLY YES
-    DOWNLOAD_NO_EXTRACT YES
 )
-set(ca_bundle_pem ${cacert_SOURCE_DIR}/cacert-${PXSTEAMDL_CA_BUNDLE_DATE}.pem)
+add_library(asio INTERFACE)
+add_library(asio::asio ALIAS asio)
+target_include_directories(asio SYSTEM INTERFACE ${asio_SOURCE_DIR}/include)
+target_compile_definitions(asio INTERFACE ASIO_STANDALONE ASIO_NO_DEPRECATED)
+
+set(OPENSSL_USE_STATIC_LIBS ON)
+find_package(OpenSSL 3.0 REQUIRED)
+
+# Mozilla CA bundle (as extracted by curl), compiled in: the OS trust store differs per platform.
+# PXSTEAMDL_CA_BUNDLE_FILE replaces it with another PEM file (a private CA for the local benchmark server).
+set(PXSTEAMDL_CA_BUNDLE_DATE 2026-09-25)
+set(PXSTEAMDL_CA_BUNDLE_FILE "" CACHE FILEPATH "Use this PEM file as the compiled-in CA bundle instead of Mozilla's")
+if(PXSTEAMDL_CA_BUNDLE_FILE)
+    set(ca_bundle_pem ${PXSTEAMDL_CA_BUNDLE_FILE})
+else()
+    CPMAddPackage(
+        NAME cacert
+        VERSION ${PXSTEAMDL_CA_BUNDLE_DATE}
+        URL https://curl.se/ca/cacert-${PXSTEAMDL_CA_BUNDLE_DATE}.pem
+        URL_HASH SHA256=a41b5d356aea97a529fe27e0f7316d2f9d946d75927476cf9cf1b90637d00505
+        DOWNLOAD_ONLY YES
+        DOWNLOAD_NO_EXTRACT YES
+    )
+    set(ca_bundle_pem ${cacert_SOURCE_DIR}/cacert-${PXSTEAMDL_CA_BUNDLE_DATE}.pem)
+endif()
 set(ca_bundle_cpp ${CMAKE_CURRENT_BINARY_DIR}/ca_bundle.cpp)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${ca_bundle_pem})
 file(READ ${ca_bundle_pem} ca_bundle_hex HEX)
@@ -219,8 +177,9 @@ function(pxsteamdl_warnings target)
     endif()
 endfunction()
 
-# Everything but the three files that talk to the outside world (HTTP, the CM session, pauses). The unit tests build
-# these sources against fakes of those three instead (tests/fakes), so the whole download pipeline runs offline.
+# Everything but the files that talk to the outside world (HTTP, the CM session, pauses, the asio connections under
+# them). The unit tests build these sources against fakes of those instead (tests/fakes), so the whole download
+# pipeline runs offline.
 set(PXSTEAMDL_CORE_SOURCES
     src/cdn.cpp
     src/chunk.cpp
@@ -244,6 +203,7 @@ set(PXSTEAMDL_CORE_SOURCES
 add_library(pxsteamdl
     ${PXSTEAMDL_CORE_SOURCES}
     src/http.cpp
+    src/net.cpp
     src/session.cpp
     src/sleep.cpp
     ${ca_bundle_cpp}
@@ -256,7 +216,8 @@ target_include_directories(pxsteamdl
     PRIVATE src
 )
 target_link_libraries(pxsteamdl
-    PRIVATE CURL::libcurl MbedTLS::mbedcrypto ZLIB::ZLIB liblzma libzstd_static nlohmann_json::nlohmann_json
+    PRIVATE asio::asio OpenSSL::SSL OpenSSL::Crypto MbedTLS::mbedcrypto ZLIB::ZLIB liblzma libzstd_static
+            nlohmann_json::nlohmann_json
     PUBLIC Threads::Threads
 )
 if(WIN32)
@@ -336,6 +297,7 @@ if(PXSTEAMDL_BUILD_TESTS)
     add_executable(pxsteamdl-tests
         ${PXSTEAMDL_CORE_SOURCES}
         tests/fakes/fake_http.cpp
+        tests/fakes/fake_pool.cpp
         tests/fakes/fake_session.cpp
         tests/fakes/fake_sleep.cpp
         tests/fake_steam.cpp
@@ -356,8 +318,8 @@ if(PXSTEAMDL_BUILD_TESTS)
     )
     target_include_directories(pxsteamdl-tests PRIVATE src tests tests/fakes include ${CMAKE_CURRENT_BINARY_DIR}/include)
     target_link_libraries(pxsteamdl-tests
-        PRIVATE GTest::gtest_main ZLIB::ZLIB MbedTLS::mbedcrypto liblzma libzstd_static nlohmann_json::nlohmann_json
-                Threads::Threads
+        PRIVATE GTest::gtest_main asio::asio ZLIB::ZLIB MbedTLS::mbedcrypto liblzma libzstd_static
+                nlohmann_json::nlohmann_json Threads::Threads
     )
     if(WIN32)
         target_compile_definitions(pxsteamdl-tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
@@ -370,7 +332,7 @@ if(PXSTEAMDL_BUILD_TESTS)
     # The real SleepFor(), which the fake above replaces.
     add_executable(pxsteamdl-sleep-tests src/sleep.cpp tests/sleep_test.cpp)
     target_include_directories(pxsteamdl-sleep-tests PRIVATE src)
-    target_link_libraries(pxsteamdl-sleep-tests PRIVATE GTest::gtest_main Threads::Threads)
+    target_link_libraries(pxsteamdl-sleep-tests PRIVATE GTest::gtest_main asio::asio Threads::Threads)
     pxsteamdl_warnings(pxsteamdl-sleep-tests)
     gtest_discover_tests(pxsteamdl-sleep-tests)
 endif()
