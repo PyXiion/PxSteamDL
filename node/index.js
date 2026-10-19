@@ -2,7 +2,7 @@
 'use strict';
 
 const { prebuiltPath } = require('./prebuild');
-const { toId, boundedInt, optionalFunction, guard, MAX_WORKERS } = require('./util');
+const { toId, boundedInt, optionalFunction, guard, MAX_WORKERS, MAX_POOL } = require('./util');
 
 // A build from source (node/native) wins over the addon that ships in the package (prebuilds/).
 function loadNative() {
@@ -74,6 +74,9 @@ class Client {
     const bigIds = ids.map(toId);
     boundedInt('parallelItems', parallelItems, MAX_WORKERS);
     boundedInt('threadsPerItem', threadsPerItem, MAX_WORKERS);
+    if (parallelItems * threadsPerItem > MAX_POOL) {
+      throw new RangeError(`parallelItems * threadsPerItem must be at most ${MAX_POOL}`);
+    }
     optionalFunction('onProgress', onProgress);
     optionalFunction('onResolved', onResolved);
     signal?.throwIfAborted();

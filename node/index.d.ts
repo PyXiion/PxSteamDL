@@ -68,7 +68,7 @@ export interface ClientOptions {
 export interface DownloadOptions {
   /** Items downloaded side by side, 1 to 1024. Default 2. */
   parallelItems?: number;
-  /** Chunk workers per parallel item, shared across all items, 1 to 1024. Default 4. */
+  /** Chunk workers per parallel item, shared across all items, 1 to 1024; parallelItems * threadsPerItem is at most 256. Default 4. */
   threadsPerItem?: number;
   /** Called on the main thread. An exception it throws is an uncaught exception and does not stop the download. */
   onProgress?: (progress: Progress) => void;

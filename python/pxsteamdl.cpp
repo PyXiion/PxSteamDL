@@ -25,6 +25,10 @@ std::vector<pxsteamdl::Result> Download(pxsteamdl::Client& client, const std::ve
                                         std::optional<ResolvedCallback> on_resolved, const std::stop_source* cancel) {
   if (parallel_items < 1) throw nb::value_error("parallel_items must be >= 1");
   if (threads_per_item < 1) throw nb::value_error("threads_per_item must be >= 1");
+  if (parallel_items > static_cast<int>(pxsteamdl::kMaxWorkers) ||
+      threads_per_item > static_cast<int>(pxsteamdl::kMaxWorkers)) {
+    throw nb::value_error("parallel_items * threads_per_item must be at most 256");
+  }
 
   pxsteamdl::Options options;
   options.parallel_items = static_cast<unsigned>(parallel_items);

@@ -56,6 +56,7 @@ test('download validates its arguments before touching the network', async () =>
   await assert.rejects(client.download([1], 42), TypeError);
   await assert.rejects(client.download([1.5], 'root'), TypeError);
   await assert.rejects(client.download([1], 'root', { parallelItems: 2 ** 32 }), RangeError);
+  await assert.rejects(client.download([1], 'root', { parallelItems: 1024, threadsPerItem: 1024 }), RangeError);
   await assert.rejects(client.download([1], 'root', { onProgress: 'nope' }), TypeError);
 });
 

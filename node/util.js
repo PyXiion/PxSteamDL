@@ -14,7 +14,9 @@ function toId(value) {
   return id;
 }
 
+// Each value is capped, and so is the pool they make together (parallelItems * threadsPerItem chunk workers).
 const MAX_WORKERS = 1024;
+const MAX_POOL = 256;
 
 function boundedInt(name, value, max) {
   if (!Number.isInteger(value) || value < 1 || value > max) {
@@ -44,4 +46,4 @@ function guard(callback) {
   };
 }
 
-module.exports = { toId, boundedInt, optionalFunction, guard, MAX_WORKERS };
+module.exports = { toId, boundedInt, optionalFunction, guard, MAX_WORKERS, MAX_POOL };

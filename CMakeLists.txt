@@ -331,6 +331,11 @@ if(PXSTEAMDL_BUILD_NODE)
         LIBRARY_OUTPUT_DIRECTORY ${node_native_dir}
         RUNTIME_OUTPUT_DIRECTORY ${node_native_dir}
     )
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # node.exe exports its own copies of mbedTLS (and other) symbols; resolve ours inside the addon so that
+        # the two versions never mix.
+        target_link_options(pxsteamdl-node PRIVATE -Wl,-Bsymbolic -Wl,--exclude-libs,ALL)
+    endif()
     pxsteamdl_warnings(pxsteamdl-node)
 endif()
 

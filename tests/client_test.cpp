@@ -1049,6 +1049,19 @@ TEST_F(ClientTest, ZeroParallelismIsRefused) {
   EXPECT_THROW(client.download({}, m_root, options), std::invalid_argument);
 }
 
+TEST_F(ClientTest, TooManyWorkersAreRefused) {
+  Client client;
+  Options options;
+  options.parallel_items = 16;
+  options.threads_per_item = 16;
+  EXPECT_NO_THROW(client.download({}, m_root, options));
+  options.threads_per_item = 17;
+  EXPECT_THROW(client.download({}, m_root, options), std::invalid_argument);
+  options.parallel_items = 0xFFFFFFFFu;  // the product must not wrap around
+  options.threads_per_item = 0xFFFFFFFFu;
+  EXPECT_THROW(client.download({}, m_root, options), std::invalid_argument);
+}
+
 TEST_F(ClientTest, TimeoutsBelowOneSecondAreRefused) {
   ClientOptions options;
   options.connect_timeout = std::chrono::seconds(0);

@@ -90,11 +90,15 @@ struct ClientOptions {
   std::chrono::seconds stall_timeout{30};
 };
 
+// The most chunk workers (parallel_items * threads_per_item) one download() call may ask for.
+inline constexpr unsigned kMaxWorkers = 256;
+
 struct Options {
   // Items downloaded side by side; the next item starts as soon as one of them has all its chunks under way.
   // Up to twice as many are resolved (manifest fetched, files planned) ahead. At least 1.
   unsigned parallel_items = 2;
-  // Chunk downloads share one pool of parallel_items * threads_per_item workers across all items. At least 1.
+  // Chunk downloads share one pool of parallel_items * threads_per_item workers across all items. At least 1;
+  // the pool may have at most kMaxWorkers threads.
   unsigned threads_per_item = 4;
   // Called on the download() thread once per item, in order, as soon as its batch of up to 100 items has been
   // answered by Steam (not during the HTTP request) and before that item's bytes are downloaded. Details are looked
@@ -126,9 +130,9 @@ class Client {
   // Downloads each item into root/<item id>/, updating existing copies incrementally.
   // Returns one Result per entry of item_ids, in order. Per-item failures are reported in Result::error (and its
   // kind); thread-safe. A repeated ID is downloaded once: on_resolved is called once for it and every occurrence gets
-  // the same Result. Throws std::invalid_argument if parallel_items or threads_per_item is 0.
-  // Downloads to the same directory wait for its kernel lock (root/.<id>.lock), with cancellation support, even
-  // across clients and processes. The file records the owner's PID; normal release removes it on Linux/macOS,
+  // the same Result. Throws std::invalid_argument if parallel_items or threads_per_item is 0 or their product exceeds
+  // kMaxWorkers. Downloads to the same directory wait for its kernel lock (root/.<id>.lock), with cancellation support,
+  // even across clients and processes. The file records the owner's PID; normal release removes it on Linux/macOS,
   // while Windows keeps it. Do not delete active lock files or share destinations with older lock implementations.
   std::vector<Result> download(std::span<const std::uint64_t> item_ids, const std::filesystem::path& root,
                                const Options& options = {});

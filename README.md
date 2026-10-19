@@ -103,7 +103,7 @@ variables; empty: no proxy), a `connect_timeout` and a `stall_timeout`. A `Clien
 **Callbacks that throw.** An exception from `on_progress` (worker threads) fails the item it was called for
 (`error_kind` `kOther`) and the others go on; one from `on_resolved` propagates out of `download()` after the items
 under way have been stopped. In Python, exceptions from either are reported through `sys.unraisablehook` and the
-download goes on. `download()` throws `std::invalid_argument` if `parallel_items` or `threads_per_item` is 0.
+download goes on. `download()` throws `std::invalid_argument` if `parallel_items` or `threads_per_item` is 0 or if `parallel_items * threads_per_item` exceeds `pxsteamdl::kMaxWorkers` (256).
 
 To cancel, pass a `std::stop_token` in `Options::stop`. Once stop is requested, in-flight chunk requests finish,
 the remaining work is skipped and every unfinished item reports `Result::error == "cancelled"`; items that already

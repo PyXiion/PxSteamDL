@@ -6,6 +6,11 @@ as described in [CONTRIBUTING.md](CONTRIBUTING.md#versioning).
 
 ## [Unreleased]
 
+### Changed
+
+- `download()` refuses a worker pool above 256 threads (`parallel_items * threads_per_item`) with `std::invalid_argument`
+  (`ValueError` in Python); a huge value used to start that many threads.
+
 ### Added
 
 - Node.js binding (Node-API, built with cmake-js): `Client.create()` and `client.download()` with `onProgress`, `onResolved`
