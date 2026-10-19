@@ -6,7 +6,14 @@ const path = require('node:path');
 
 // The addons built by the release workflow sit in prebuilds/<platform>-<arch>/. The Linux one is built against
 // glibc, so musl systems (Alpine) build from source instead.
+let cached;
+
 function prebuiltPath() {
+  if (cached === undefined) cached = find();
+  return cached;
+}
+
+function find() {
   if (process.platform === 'linux' && !process.report?.getReport().header.glibcVersionRuntime) return null;
   const file = path.join(__dirname, '..', 'prebuilds', `${process.platform}-${process.arch}`, 'pxsteamdl-addon.node');
   return fs.existsSync(file) ? file : null;

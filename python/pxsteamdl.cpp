@@ -27,7 +27,7 @@ std::vector<pxsteamdl::Result> Download(pxsteamdl::Client& client, const std::ve
   if (threads_per_item < 1) throw nb::value_error("threads_per_item must be >= 1");
   if (parallel_items > static_cast<int>(pxsteamdl::kMaxWorkers) ||
       threads_per_item > static_cast<int>(pxsteamdl::kMaxWorkers)) {
-    throw nb::value_error("parallel_items * threads_per_item must be at most 256");
+    throw nb::value_error("parallel_items and threads_per_item must be at most 256, and so is their product");
   }
 
   pxsteamdl::Options options;

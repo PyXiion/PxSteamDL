@@ -6,12 +6,25 @@ const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 const { prebuiltPath } = require('./prebuild');
 
-if (prebuiltPath()) {
+// A prebuilt addon that cannot be loaded here (an older C library, a missing runtime) is as good as none.
+function prebuiltWorks() {
+  const file = prebuiltPath();
+  if (!file) return { works: false, reason: `no prebuilt addon for ${process.platform}-${process.arch}` };
+  try {
+    require(file);
+    return { works: true };
+  } catch (error) {
+    return { works: false, reason: `the prebuilt addon does not load (${error.message})` };
+  }
+}
+
+const prebuilt = prebuiltWorks();
+if (prebuilt.works) {
   console.log(`pxsteamdl: using the prebuilt addon for ${process.platform}-${process.arch}`);
   process.exit(0);
 }
 
-console.log(`pxsteamdl: no prebuilt addon for ${process.platform}-${process.arch}, building from source`);
+console.log(`pxsteamdl: ${prebuilt.reason}, building from source`);
 let cmakeJs;
 try {
   cmakeJs = require.resolve('cmake-js/bin/cmake-js');
