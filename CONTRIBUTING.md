@@ -95,7 +95,8 @@ Python version or compiler is a minor version and is announced in the changelog.
 1. Move the entries of `[Unreleased]` in `CHANGELOG.md` under a new `## [X.Y.Z] - date` heading and update the links
    at the bottom.
 2. Set the version in `project(PxSteamDL VERSION X.Y.Z ...)` in `CMakeLists.txt` (the wheels, the CLI and the
-   package config read it from there).
+   package config read it from there), and the same version in `package.json` and `package-lock.json` (`npm version X.Y.Z
+   --no-git-tag-version` sets both).
 3. Tag the commit `vX.Y.Z` and push the tag. The release workflow refuses a tag that does not match the version in
    `CMakeLists.txt` or that has no changelog section, builds the binaries, wheels and sdist, and publishes the release
    with the changelog section as its notes.

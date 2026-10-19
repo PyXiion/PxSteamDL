@@ -3,6 +3,7 @@ project(PxSteamDL VERSION 0.4.0 LANGUAGES CXX)
 
 option(PXSTEAMDL_BUILD_CLI "Build the pxsteamdl command-line tool" ${PROJECT_IS_TOP_LEVEL})
 option(PXSTEAMDL_BUILD_PYTHON "Build the Python extension module" OFF)
+option(PXSTEAMDL_BUILD_NODE "Build the Node.js addon (use cmake-js: npm install)" OFF)
 option(PXSTEAMDL_BUILD_TESTS "Build the unit tests (GoogleTest)" OFF)
 option(PXSTEAMDL_BUILD_EXAMPLES "Build the programs in examples/" OFF)
 option(PXSTEAMDL_INSTALL "Generate install rules: headers, one library with its dependencies merged in, find_package files" ${PROJECT_IS_TOP_LEVEL})
@@ -32,6 +33,10 @@ CPMAddPackage(
     SYSTEM YES
 )
 
+if(PXSTEAMDL_BUILD_NODE AND WIN32)
+    # node.lib exports node.exe's own zlib (inflate, crc32, ...), which clashes with ours at link time: prefix ours.
+    add_compile_definitions(Z_PREFIX)
+endif()
 CPMAddPackage(
     NAME zlib
     VERSION 1.3.2
@@ -301,6 +306,38 @@ if(PXSTEAMDL_BUILD_PYTHON)
     # dependency install rules out of the wheel.
     install(TARGETS _pxsteamdl LIBRARY DESTINATION pxsteamdl COMPONENT python)
     install(FILES ${CMAKE_CURRENT_BINARY_DIR}/_pxsteamdl.pyi DESTINATION pxsteamdl COMPONENT python)
+endif()
+
+if(PXSTEAMDL_BUILD_NODE)
+    if(NOT CMAKE_JS_INC)
+        message(FATAL_ERROR "PXSTEAMDL_BUILD_NODE needs the Node.js headers: build with cmake-js (npm install)")
+    endif()
+    execute_process(
+        COMMAND node -p "require('path').resolve(require('node-addon-api').include_dir)"
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        OUTPUT_VARIABLE node_addon_api_dir
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        COMMAND_ERROR_IS_FATAL ANY
+    )
+    string(REPLACE "\"" "" node_addon_api_dir "${node_addon_api_dir}")
+    add_library(pxsteamdl-node SHARED node/pxsteamdl.cpp ${CMAKE_JS_SRC})
+    set_target_properties(pxsteamdl-node PROPERTIES OUTPUT_NAME pxsteamdl-addon PREFIX "" SUFFIX ".node")
+    target_include_directories(pxsteamdl-node SYSTEM PRIVATE ${CMAKE_JS_INC} ${node_addon_api_dir})
+    target_compile_definitions(pxsteamdl-node PRIVATE NAPI_CPP_EXCEPTIONS)
+    target_link_libraries(pxsteamdl-node PRIVATE PxSteamDL::pxsteamdl ${CMAKE_JS_LIB})
+    # node/index.js loads node/native/pxsteamdl-addon.node, whatever the generator.
+    set(node_native_dir $<1:${CMAKE_CURRENT_SOURCE_DIR}/node/native>)
+    set_target_properties(pxsteamdl-node PROPERTIES
+        LIBRARY_OUTPUT_DIRECTORY ${node_native_dir}
+        RUNTIME_OUTPUT_DIRECTORY ${node_native_dir}
+    )
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # The node executable exports the symbols of the libraries it bundles (zlib, and with some versions even
+        # mbedTLS), which would replace the addon's own static copies of different versions at load time. Bind the
+        # addon's references to its own code, and do not re-export the static libraries.
+        target_link_options(pxsteamdl-node PRIVATE -Wl,-Bsymbolic -Wl,--exclude-libs,ALL)
+    endif()
+    pxsteamdl_warnings(pxsteamdl-node)
 endif()
 
 if(PXSTEAMDL_BUILD_EXAMPLES)

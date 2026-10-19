@@ -36,6 +36,12 @@ jobs:
             echo "::error::Tag $TAG does not match the version $expected in CMakeLists.txt"
             exit 1
           fi
+          npm_version=$(node -p "require('./package.json').version")
+          lock_version=$(node -p "require('./package-lock.json').version")
+          if [ "$npm_version" != "$expected" ] || [ "$lock_version" != "$expected" ]; then
+            echo "::error::package.json ($npm_version) and package-lock.json ($lock_version) must have the version $expected from CMakeLists.txt"
+            exit 1
+          fi
           if ! grep -q "^## \[$expected\] - " CHANGELOG.md; then
             echo "::error::CHANGELOG.md has no section for $expected"
             exit 1
@@ -165,6 +171,127 @@ jobs:
           path: dist/*.tar.gz
           if-no-files-found: error
 
+  # The Node.js addon for each platform, shipped inside the npm package (node/install.js builds from source elsewhere).
+  # Node-API makes one binary work for every Node.js version.
+  node-prebuilds:
+    name: node addon (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+            container: quay.io/pypa/manylinux_2_28_x86_64
+          - name: darwin-arm64
+            os: macos-latest
+          - name: win32-x64
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    env:
+      CPM_SOURCE_CACHE: ${{ github.workspace }}/.cpm-cache
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - uses: actions/cache@v6
+        if: matrix.container == ''
+        with:
+          path: .cpm-cache
+          key: cpm-node-prebuild-${{ matrix.name }}-${{ hashFiles('CMakeLists.txt') }}
+
+      - uses: ilammy/msvc-dev-cmd@v1.13.0
+        if: runner.os == 'Windows'
+
+      # manylinux ships a compiler but an old CMake.
+      - name: Install CMake and Ninja (manylinux)
+        if: matrix.container != ''
+        run: |
+          /opt/python/cp312-cp312/bin/pip install cmake ninja
+          echo /opt/python/cp312-cp312/bin >> "$GITHUB_PATH"
+
+      - name: Install Ninja (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      - name: Build
+        run: |
+          npm install --ignore-scripts
+          npx cmake-js compile --out build-node --CDPXSTEAMDL_BUILD_NODE=ON --CDPXSTEAMDL_BUILD_CLI=OFF --CDPXSTEAMDL_INSTALL=OFF
+          mkdir -p prebuilds/${{ matrix.name }}
+          cp node/native/pxsteamdl-addon.node prebuilds/${{ matrix.name }}/
+          ls -l prebuilds/${{ matrix.name }}
+
+      - name: Dependencies of the addon
+        if: runner.os != 'Windows'
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            ldd prebuilds/${{ matrix.name }}/pxsteamdl-addon.node
+            objdump -T prebuilds/${{ matrix.name }}/pxsteamdl-addon.node | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+          else
+            otool -L prebuilds/${{ matrix.name }}/pxsteamdl-addon.node
+          fi
+
+      - name: Load check
+        run: node -e "require('./node/prebuild').prebuiltPath() || process.exit(1); console.log(require('./node').version)"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: node-prebuild-${{ matrix.name }}
+          path: prebuilds
+          if-no-files-found: error
+
+  npm:
+    name: Publish to npm
+    needs: [check, node-prebuilds]
+    if: always() && needs.node-prebuilds.result == 'success' && needs.check.result != 'failure'
+    runs-on: ubuntu-latest
+    # The pending trusted publisher on npmjs.com names this workflow and the npm environment.
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: prebuilds
+          pattern: node-prebuild-*
+          merge-multiple: true
+
+      - name: Pack
+        run: |
+          find prebuilds -type f
+          npm pack
+          ls -l pxsteamdl-*.tgz
+
+      # The tarball must work without building anything: install it without scripts and log in to Steam.
+      - name: Try the tarball
+        run: |
+          mkdir "$RUNNER_TEMP/consumer-node"
+          cd "$RUNNER_TEMP/consumer-node"
+          npm init -y
+          npm install --ignore-scripts "$GITHUB_WORKSPACE"/pxsteamdl-*.tgz
+          node -e "require('pxsteamdl').Client.create().then(() => console.log('logged in'))"
+
+      # Trusted publishing (OIDC): no token. Only for a tag; a manual run stops after the checks above.
+      - name: Publish
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        run: npm publish --provenance --access public pxsteamdl-*.tgz
+
   pypi:
     name: Publish to PyPI
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
@@ -208,6 +335,7 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           path: release_assets
+          pattern: "{binary-*,wheels-*,sdist}"
           merge-multiple: true
 
       - name: Generate Checksums
