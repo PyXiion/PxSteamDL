@@ -9,8 +9,8 @@
 #include <string>
 #include <thread>
 
-#include <asio.hpp>
 #include <gtest/gtest.h>
+#include <asio.hpp>
 
 #include "http.hpp"
 #include "net.hpp"
@@ -65,7 +65,8 @@ class ScriptedServer {
       asio::error_code ec;
       std::size_t head = asio::read_until(socket, buffer, "\r\n\r\n", ec);
       if (ec) return;
-      std::string request(asio::buffers_begin(buffer.data()), asio::buffers_begin(buffer.data()) + static_cast<std::ptrdiff_t>(head));
+      std::string request(asio::buffers_begin(buffer.data()),
+                          asio::buffers_begin(buffer.data()) + static_cast<std::ptrdiff_t>(head));
       buffer.consume(head);
       // A request body, if any, is part of the text the script sees.
       std::size_t at = request.find("Content-Length: ");
@@ -74,7 +75,8 @@ class ScriptedServer {
         while (buffer.size() < length) {
           if (asio::read(socket, buffer, asio::transfer_exactly(length - buffer.size()), ec); ec) return;
         }
-        request.append(asio::buffers_begin(buffer.data()), asio::buffers_begin(buffer.data()) + static_cast<std::ptrdiff_t>(length));
+        request.append(asio::buffers_begin(buffer.data()),
+                       asio::buffers_begin(buffer.data()) + static_cast<std::ptrdiff_t>(length));
         buffer.consume(length);
       }
       std::string reply = m_script(request, connection, index);
@@ -117,7 +119,8 @@ TEST(HttpTest, SendsTheRequestLineHostAndPostBody) {
     seen = request;
     return Ok("ok");
   });
-  HttpResponse response = HttpRequest(server.url("/submit?x=1"), {}, "POST", "a=b&c=d", "application/x-www-form-urlencoded");
+  HttpResponse response =
+      HttpRequest(server.url("/submit?x=1"), {}, "POST", "a=b&c=d", "application/x-www-form-urlencoded");
   EXPECT_EQ(response.status, 200);
   EXPECT_NE(seen.find("POST /submit?x=1 HTTP/1.1\r\n"), std::string::npos) << seen;
   EXPECT_NE(seen.find("Host: 127.0.0.1:"), std::string::npos);
@@ -128,8 +131,9 @@ TEST(HttpTest, SendsTheRequestLineHostAndPostBody) {
 
 TEST(HttpTest, ReadsAChunkedBodyWithExtensionsAndTrailers) {
   ScriptedServer server([](const std::string&, int, int) {
-    return std::string("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
-                       "5;ext=1\r\nhello\r\n6\r\n world\r\n0\r\nX-Trailer: yes\r\n\r\n");
+    return std::string(
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+        "5;ext=1\r\nhello\r\n6\r\n world\r\n0\r\nX-Trailer: yes\r\n\r\n");
   });
   EXPECT_EQ(Text(HttpRequest(server.url("/"), {}).body), "hello world");
 }
@@ -142,9 +146,8 @@ TEST(HttpTest, ReadsABodyThatEndsWithTheConnection) {
 }
 
 TEST(HttpTest, ReturnsErrorStatusesAsResponses) {
-  ScriptedServer server([](const std::string&, int, int) {
-    return std::string("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
-  });
+  ScriptedServer server(
+      [](const std::string&, int, int) { return std::string("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"); });
   HttpResponse response = HttpRequest(server.url("/missing"), {});
   EXPECT_EQ(response.status, 404);
   EXPECT_TRUE(response.body.empty());
@@ -160,9 +163,7 @@ TEST(HttpTest, ReusesAKeepAliveConnection) {
 
 TEST(HttpTest, ReplacesAKeepAliveConnectionTheServerClosedMeanwhile) {
   // The server promises keep-alive but hangs up after every answer.
-  ScriptedServer server([](const std::string&, int, int) {
-    return "!" + Ok("fresh");
-  });
+  ScriptedServer server([](const std::string&, int, int) { return "!" + Ok("fresh"); });
   HttpConfig config;
   config.net = Net::acquire();
   EXPECT_EQ(Text(HttpRequest(server.url("/"), config).body), "fresh");
@@ -173,7 +174,8 @@ TEST(HttpTest, ReplacesAKeepAliveConnectionTheServerClosedMeanwhile) {
 
 TEST(HttpTest, FollowsRedirects) {
   ScriptedServer server([](const std::string& request, int, int) -> std::string {
-    if (request.starts_with("GET /start ")) return "HTTP/1.1 302 Found\r\nLocation: /middle\r\nContent-Length: 0\r\n\r\n";
+    if (request.starts_with("GET /start "))
+      return "HTTP/1.1 302 Found\r\nLocation: /middle\r\nContent-Length: 0\r\n\r\n";
     if (request.starts_with("GET /middle ")) return "HTTP/1.1 301 Moved\r\nLocation: next\r\nContent-Length: 0\r\n\r\n";
     if (request.starts_with("GET /next ")) return Ok("arrived");
     return "HTTP/1.1 500 Oops\r\nContent-Length: 0\r\n\r\n";
@@ -183,8 +185,10 @@ TEST(HttpTest, FollowsRedirects) {
 
 TEST(HttpTest, RedirectsAPostToAGetOnlyFor303) {
   ScriptedServer server([](const std::string& request, int, int) -> std::string {
-    if (request.starts_with("POST /see-other ")) return "HTTP/1.1 303 See Other\r\nLocation: /result\r\nContent-Length: 0\r\n\r\n";
-    if (request.starts_with("POST /temporary ")) return "HTTP/1.1 307 Temporary\r\nLocation: /again\r\nContent-Length: 0\r\n\r\n";
+    if (request.starts_with("POST /see-other "))
+      return "HTTP/1.1 303 See Other\r\nLocation: /result\r\nContent-Length: 0\r\n\r\n";
+    if (request.starts_with("POST /temporary "))
+      return "HTTP/1.1 307 Temporary\r\nLocation: /again\r\nContent-Length: 0\r\n\r\n";
     if (request.starts_with("GET /result ")) return Ok("got");
     if (request.starts_with("POST /again ") && request.ends_with("body")) return Ok("posted again");
     return "HTTP/1.1 500 Oops\r\nContent-Length: 0\r\n\r\n";
@@ -201,9 +205,8 @@ TEST(HttpTest, GivesUpOnEndlessRedirects) {
 }
 
 TEST(HttpTest, TruncatedBodyIsATransientError) {
-  ScriptedServer server([](const std::string&, int, int) {
-    return std::string("!HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nhalf");
-  });
+  ScriptedServer server(
+      [](const std::string&, int, int) { return std::string("!HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nhalf"); });
   EXPECT_THROW(HttpRequest(server.url("/"), {}), TransientError);
 }
 

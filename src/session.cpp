@@ -16,9 +16,9 @@
 #include <utility>
 #include <vector>
 
-#include <nlohmann/json.hpp>
 #include <openssl/evp.h>
 #include <openssl/sha.h>
+#include <nlohmann/json.hpp>
 
 #include "async.hpp"
 #include "cm_packet.hpp"
@@ -98,7 +98,8 @@ Bytes EncodeFrame(std::uint8_t opcode, ByteSpan payload) {
     frame.push_back(static_cast<std::uint8_t>(payload.size()));
   } else {
     frame.push_back(0x80 | 127);
-    for (int shift = 56; shift >= 0; shift -= 8) frame.push_back(static_cast<std::uint8_t>(std::uint64_t{payload.size()} >> shift));
+    for (int shift = 56; shift >= 0; shift -= 8)
+      frame.push_back(static_cast<std::uint8_t>(std::uint64_t{payload.size()} >> shift));
   }
   std::array<std::uint8_t, 4> mask;
   std::uint32_t random = Random()();
@@ -156,13 +157,15 @@ asio::awaitable<void> Handshake(Connection& connection, const Url& url, const st
                         "\r\nSec-WebSocket-Version: 13\r\n\r\n";
   co_await connection.writeAll(reinterpret_cast<const std::uint8_t*>(request.data()), request.size());
   std::string head = co_await connection.readUntil("\r\n\r\n", 16 * 1024);
-  if (!head.starts_with("HTTP/1.1 101")) FailTransient("WebSocket upgrade refused: " + head.substr(0, head.find("\r\n")));
+  if (!head.starts_with("HTTP/1.1 101"))
+    FailTransient("WebSocket upgrade refused: " + head.substr(0, head.find("\r\n")));
   std::string expected_input = key + std::string(kGuid);
   std::array<std::uint8_t, SHA_DIGEST_LENGTH> digest;
   SHA1(reinterpret_cast<const unsigned char*>(expected_input.data()), expected_input.size(), digest.data());
   std::string expected = Base64(digest.data(), digest.size());
   std::string lower = head;
-  std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  std::transform(lower.begin(), lower.end(), lower.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
   std::size_t at = lower.find("sec-websocket-accept:");
   if (at == std::string::npos) FailTransient("WebSocket upgrade lacks Sec-WebSocket-Accept");
   std::size_t begin = at + 21;
@@ -373,9 +376,10 @@ class Session::Impl {
     m_active += 3;  // before the first coroutine can run to its end
     asio::co_spawn(m_executor, readerLoop(connection, generation), asio::detached);
     asio::co_spawn(m_executor, writerLoop(connection, generation), asio::detached);
-    asio::co_spawn(m_executor,
-                   heartbeatLoop(generation, std::clamp(result.heartbeat_seconds, kMinHeartbeatSeconds, kMaxHeartbeatSeconds)),
-                   asio::detached);
+    asio::co_spawn(
+        m_executor,
+        heartbeatLoop(generation, std::clamp(result.heartbeat_seconds, kMinHeartbeatSeconds, kMaxHeartbeatSeconds)),
+        asio::detached);
     co_return true;
   }
 

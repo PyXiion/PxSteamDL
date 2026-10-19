@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: LGPL-3.0-or-later
 # Install rules (included from CMakeLists.txt when PXSTEAMDL_INSTALL is ON).
 #
-# The library statically links curl, mbedTLS, zlib, liblzma and zstd, which are built from source here and are
+# The library statically links asio's OpenSSL, mbedTLS, zlib, liblzma and zstd, which are built from source here and are
 # not installed themselves. Exporting `pxsteamdl` as it is would leave the installed package pointing at
 # targets that do not exist, so instead the library and everything it links statically are merged into one
 # archive, and a small hand-written config file describes that archive and the system libraries it needs.
@@ -10,8 +10,7 @@ include(CMakePackageConfigHelpers)
 
 # Collects what the targets link, transitively: the static library targets (into <out_targets>) and what is not a
 # target, i.e. system libraries such as ws2_32 or "-framework CoreFoundation" (into <out_system_libraries>).
-# curl hides its dependencies behind CURL::* targets that are visible only inside its own directory; the libraries
-# they stand for are therefore passed as roots, and the CURL::* names are skipped.
+# Imported OpenSSL::* targets (static, as OPENSSL_USE_STATIC_LIBS asks) are merged like built ones.
 function(pxsteamdl_link_closure out_targets out_system_libraries)
     set(queue ${ARGN})
     set(seen "")
@@ -28,7 +27,7 @@ function(pxsteamdl_link_closure out_targets out_system_libraries)
         endif()
         list(APPEND seen ${current})
         get_target_property(type ${current} TYPE)
-        if(type STREQUAL "STATIC_LIBRARY")
+        if(type STREQUAL "STATIC_LIBRARY" OR type STREQUAL "UNKNOWN_LIBRARY")  # OpenSSL::* are UNKNOWN imported libraries
             list(APPEND static_targets ${current})
         endif()
         foreach(property LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
@@ -44,7 +43,7 @@ function(pxsteamdl_link_closure out_targets out_system_libraries)
                     continue()  # empty, a condition that cannot be evaluated here, or handled by find_dependency
                 elseif(TARGET ${item})
                     list(APPEND queue ${item})
-                elseif(NOT item MATCHES "^CURL::")
+                else()
                     list(APPEND system_libraries "${item}")
                 endif()
             endforeach()

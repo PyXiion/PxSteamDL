@@ -38,8 +38,7 @@ bool IsSafeHostName(std::string_view host) {
 
 }  // namespace
 
-asio::awaitable<std::vector<std::string>> FetchCdnHosts(std::uint32_t app_id, HttpConfig config,
-                                                        std::stop_token stop) {
+asio::awaitable<std::vector<std::string>> FetchCdnHosts(std::uint32_t app_id, HttpConfig config, std::stop_token stop) {
   HttpResponse response = co_await RetryAsync(stop, [&]() -> asio::awaitable<HttpResponse> {
     HttpResponse reply = co_await HttpRequestAsync(kServersUrl, config);
     CheckHttpStatus("CDN server list", reply.status);

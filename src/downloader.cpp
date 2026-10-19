@@ -178,7 +178,7 @@ class Downloader::Impl {
         m_cacheMutex(m_io),
         m_planWake(m_io),
         m_queueReady(m_io),
-        m_pool(PoolSize(std::max(1u, workers))) {
+        m_pool(poolSize(std::max(1u, workers))) {
     m_activePlanners = m_planners;
     m_running = m_workers + m_planners;
     for (std::size_t i = 0; i < m_workers; ++i) spawn([this, i] { return work(i); });
@@ -215,7 +215,7 @@ class Downloader::Impl {
 
  private:
   // Threads for the work that blocks: about one per core, as many as there are workers at most.
-  static unsigned PoolSize(unsigned workers) {
+  static unsigned poolSize(unsigned workers) {
     unsigned cores = std::thread::hardware_concurrency();
     return std::max(2u, std::min(workers, cores == 0 ? 4u : cores));
   }
@@ -240,9 +240,8 @@ class Downloader::Impl {
     co_await m_cacheMutex.lock();
     AsyncMutex::Guard unlock(m_cacheMutex);
     if (auto it = m_keys.find(depot); it != m_keys.end()) co_return it->second;
-    AesKey key = co_await RetryAsync(m_stop, [&]() -> asio::awaitable<AesKey> {
-      co_return co_await requestDepotKey(depot, app_id);
-    });
+    AesKey key = co_await RetryAsync(
+        m_stop, [&]() -> asio::awaitable<AesKey> { co_return co_await requestDepotKey(depot, app_id); });
     co_return m_keys.emplace(depot, key).first->second;
   }
 
@@ -349,7 +348,8 @@ class Downloader::Impl {
     ItemState& state = *m_states[index];
     state.index = index;
     state.job = &job;
-    state.directory = co_await OnPool(m_pool, [&] { return std::make_unique<DirectoryUpdate>(job.destination, m_stop); });
+    state.directory =
+        co_await OnPool(m_pool, [&] { return std::make_unique<DirectoryUpdate>(job.destination, m_stop); });
     co_await fetchManifest(state, item, planner);
     co_await OnPool(m_pool, [&] {
       prepareDirectories(state);

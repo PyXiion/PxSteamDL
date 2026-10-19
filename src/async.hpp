@@ -15,7 +15,8 @@ namespace pxsteamdl::detail {
 // remembered, so a waiter re-checks its condition after every wake-up, as with std::condition_variable.
 class Signal {
  public:
-  explicit Signal(const asio::any_io_executor& executor) : m_timer(executor, std::chrono::steady_clock::time_point::max()) {}
+  explicit Signal(const asio::any_io_executor& executor)
+      : m_timer(executor, std::chrono::steady_clock::time_point::max()) {}
   asio::awaitable<void> wait() {
     std::error_code woken;
     co_await m_timer.async_wait(asio::redirect_error(asio::use_awaitable, woken));

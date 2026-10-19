@@ -178,8 +178,9 @@ inline Bytes BuildManifest(const std::vector<FileEntry>& files, std::uint32_t de
   }
   Bytes binary;
   AppendSection(binary, 0x71f617d0, payload);
-  AppendSection(binary, 0x1f4812be,
-                detail::Concat({detail::EncodeUint(1, depot), detail::EncodeUint(2, manifest_id), detail::EncodeUint(4, 0)}));
+  AppendSection(
+      binary, 0x1f4812be,
+      detail::Concat({detail::EncodeUint(1, depot), detail::EncodeUint(2, manifest_id), detail::EncodeUint(4, 0)}));
   AppendSection(binary, 0x1b81b817, {});
   detail::AppendLe32(binary, 0x32c415ab);
   return MakeZip(binary, 6);

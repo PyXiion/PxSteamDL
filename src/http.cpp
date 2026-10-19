@@ -29,7 +29,8 @@ struct ParsedHead {
 
 std::string Lower(std::string_view text) {
   std::string out(text);
-  std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  std::transform(out.begin(), out.end(), out.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
   return out;
 }
 

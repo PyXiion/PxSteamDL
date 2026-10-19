@@ -2,12 +2,13 @@
 // A pretend Steam for benchmarks: serves the Web API, the CDN and the CM WebSocket over real TLS on localhost, from
 // synthetic items (corpus.hpp). Point the library at it with a private CA (PXSTEAMDL_CA_BUNDLE_FILE) and /etc/hosts.
 //
-//   bench-server --pki DIR [--port 443] [--threads 2] [--latency-ms 0] [--seed 1] [--group name:first_id:items:files:file_bytes:chunk_bytes]...
+//   bench-server --pki DIR [--port 443] [--threads 2] [--latency-ms 0] [--seed 1] [--group
+//   name:first_id:items:files:file_bytes:chunk_bytes]...
+#include <openssl/evp.h>
+#include <openssl/sha.h>
 #include <asio.hpp>
 #include <asio/ssl.hpp>
 #include <nlohmann/json.hpp>
-#include <openssl/evp.h>
-#include <openssl/sha.h>
 
 #include <atomic>
 #include <charconv>
@@ -86,11 +87,16 @@ Request ParseRequest(const std::string& head) {
     std::string value = line.substr(colon + 1);
     while (!value.empty() && (value.front() == ' ')) value.erase(value.begin());
     while (!value.empty() && (value.back() == '\r' || value.back() == ' ')) value.pop_back();
-    if (name == "host") request.host = value;
-    else if (name == "content-length") request.content_length = std::stoull(value);
-    else if (name == "sec-websocket-key") request.key = value;
-    else if (name == "upgrade") request.upgrade = Lower(value) == "websocket";
-    else if (name == "connection") request.close = Lower(value).find("close") != std::string::npos;
+    if (name == "host")
+      request.host = value;
+    else if (name == "content-length")
+      request.content_length = std::stoull(value);
+    else if (name == "sec-websocket-key")
+      request.key = value;
+    else if (name == "upgrade")
+      request.upgrade = Lower(value) == "websocket";
+    else if (name == "connection")
+      request.close = Lower(value).find("close") != std::string::npos;
   }
   return request;
 }
@@ -101,7 +107,8 @@ std::vector<std::uint64_t> ParseIds(const std::string& form) {
   for (std::size_t at = form.find(kKey); at != std::string::npos; at = form.find(kKey, at)) {
     at += kKey.size();
     std::uint64_t id = 0;
-    while (at < form.size() && form[at] >= '0' && form[at] <= '9') id = id * 10 + static_cast<std::uint64_t>(form[at++] - '0');
+    while (at < form.size() && form[at] >= '0' && form[at] <= '9')
+      id = id * 10 + static_cast<std::uint64_t>(form[at++] - '0');
     ids.push_back(id);
   }
   return ids;
@@ -128,7 +135,10 @@ Response Route(const Request& request) {
                              {"title", it->second.title}});
         }
       }
-      response.text = nlohmann::json{{"response", {{"result", 1}, {"resultcount", details.size()}, {"publishedfiledetails", details}}}}.dump();
+      response.text =
+          nlohmann::json{
+              {"response", {{"result", 1}, {"resultcount", details.size()}, {"publishedfiledetails", details}}}}
+              .dump();
     } else if (target.starts_with("/IContentServerDirectoryService/GetServersForSteamPipe/v1/")) {
       nlohmann::json servers = nlohmann::json::array();
       for (std::string_view name : kCdnHosts) {
@@ -136,7 +146,12 @@ Response Route(const Request& request) {
       }
       response.text = nlohmann::json{{"response", {{"servers", servers}}}}.dump();
     } else if (target.starts_with("/ISteamDirectory/GetCMListForConnect/v1/")) {
-      response.text = nlohmann::json{{"response", {{"serverlist", {{{"type", "websockets"}, {"endpoint", "cm1.bench.test:" + std::to_string(g_settings.port)}}}}}}}.dump();
+      response.text =
+          nlohmann::json{
+              {"response",
+               {{"serverlist",
+                 {{{"type", "websockets"}, {"endpoint", "cm1.bench.test:" + std::to_string(g_settings.port)}}}}}}}
+              .dump();
     } else {
       response.status = 404;
     }
@@ -198,7 +213,8 @@ Bytes Frame(std::uint8_t opcode, const Bytes& payload) {
     frame.push_back(static_cast<std::uint8_t>(payload.size()));
   } else {
     frame.push_back(127);
-    for (int shift = 56; shift >= 0; shift -= 8) frame.push_back(static_cast<std::uint8_t>(std::uint64_t{payload.size()} >> shift));
+    for (int shift = 56; shift >= 0; shift -= 8)
+      frame.push_back(static_cast<std::uint8_t>(std::uint64_t{payload.size()} >> shift));
   }
   frame.insert(frame.end(), payload.begin(), payload.end());
   return frame;
@@ -221,8 +237,9 @@ asio::awaitable<void> ServeWebSocket(Stream& stream, std::string& buffer, const 
   std::string accept_input = key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
   unsigned char digest[SHA_DIGEST_LENGTH];
   SHA1(reinterpret_cast<const unsigned char*>(accept_input.data()), accept_input.size(), digest);
-  std::string upgrade = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " +
-                        Base64(digest, sizeof digest) + "\r\n\r\n";
+  std::string upgrade =
+      "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " +
+      Base64(digest, sizeof digest) + "\r\n\r\n";
   co_await asio::async_write(stream, asio::buffer(upgrade), asio::use_awaitable);
   for (;;) {
     co_await Need(stream, buffer, 2);
@@ -245,7 +262,8 @@ asio::awaitable<void> ServeWebSocket(Stream& stream, std::string& buffer, const 
     co_await Need(stream, buffer, header + length);
     Bytes payload(length);
     for (std::size_t i = 0; i < length; ++i) {
-      payload[i] = static_cast<std::uint8_t>(buffer[header + i]) ^ (masked ? static_cast<std::uint8_t>(buffer[mask_at + i % 4]) : 0);
+      payload[i] = static_cast<std::uint8_t>(buffer[header + i]) ^
+                   (masked ? static_cast<std::uint8_t>(buffer[mask_at + i % 4]) : 0);
     }
     buffer.erase(0, header + length);
     if (opcode == 0x8) co_return;
@@ -265,7 +283,9 @@ asio::awaitable<void> ServeWebSocket(Stream& stream, std::string& buffer, const 
           break;
         case detail::emsg::kClientGetDepotDecryptionKey:
           co_await Delay();
-          reply = CmReply(5439, packet.jobid_source, 1, detail::Concat({detail::EncodeUint(1, 1), detail::EncodeBytes(3, pxsteamdl::bench::DepotKey())}));
+          reply =
+              CmReply(5439, packet.jobid_source, 1,
+                      detail::Concat({detail::EncodeUint(1, 1), detail::EncodeBytes(3, pxsteamdl::bench::DepotKey())}));
           break;
         case detail::emsg::kServiceMethodCall:
           co_await Delay();
@@ -291,7 +311,8 @@ asio::awaitable<void> Serve(tcp::socket socket, asio::ssl::context& context) {
     co_await stream.async_handshake(asio::ssl::stream_base::server, asio::use_awaitable);
     std::string buffer;
     for (;;) {
-      std::size_t head_size = co_await asio::async_read_until(stream, asio::dynamic_buffer(buffer), "\r\n\r\n", asio::use_awaitable);
+      std::size_t head_size =
+          co_await asio::async_read_until(stream, asio::dynamic_buffer(buffer), "\r\n\r\n", asio::use_awaitable);
       Request request = ParseRequest(buffer.substr(0, head_size));
       buffer.erase(0, head_size);
       if (request.upgrade) {
@@ -306,10 +327,12 @@ asio::awaitable<void> Serve(tcp::socket socket, asio::ssl::context& context) {
       Response response = Route(request);
       co_await Delay();
       std::size_t size = response.bytes ? response.bytes->size() : response.text.size();
-      std::string head = "HTTP/1.1 " + std::to_string(response.status) + (response.status == 200 ? " OK" : " Not Found") +
+      std::string head = "HTTP/1.1 " + std::to_string(response.status) +
+                         (response.status == 200 ? " OK" : " Not Found") +
                          "\r\nContent-Type: " + response.content_type + "\r\nContent-Length: " + std::to_string(size) +
                          (request.close ? "\r\nConnection: close" : "\r\nConnection: keep-alive") + "\r\n\r\n";
-      std::array<asio::const_buffer, 2> parts{asio::buffer(head), response.bytes ? asio::buffer(*response.bytes) : asio::buffer(response.text)};
+      std::array<asio::const_buffer, 2> parts{
+          asio::buffer(head), response.bytes ? asio::buffer(*response.bytes) : asio::buffer(response.text)};
       co_await asio::async_write(stream, parts, asio::use_awaitable);
       g_bytes += size;
       if (request.close) break;
@@ -352,14 +375,24 @@ int main(int argc, char** argv) {
   try {
     for (int i = 1; i < argc; ++i) {
       std::string arg = argv[i];
-      auto value = [&] { if (++i >= argc) throw std::runtime_error("missing value for " + arg); return std::string(argv[i]); };
-      if (arg == "--pki") g_settings.pki = value();
-      else if (arg == "--port") g_settings.port = static_cast<unsigned short>(std::stoi(value()));
-      else if (arg == "--threads") g_settings.threads = static_cast<unsigned>(std::stoi(value()));
-      else if (arg == "--latency-ms") g_settings.latency_ms = std::stoi(value());
-      else if (arg == "--seed") g_settings.seed = std::stoull(value());
-      else if (arg == "--group") g_settings.groups.push_back(ParseGroup(value()));
-      else throw std::runtime_error("unknown option " + arg);
+      auto value = [&] {
+        if (++i >= argc) throw std::runtime_error("missing value for " + arg);
+        return std::string(argv[i]);
+      };
+      if (arg == "--pki")
+        g_settings.pki = value();
+      else if (arg == "--port")
+        g_settings.port = static_cast<unsigned short>(std::stoi(value()));
+      else if (arg == "--threads")
+        g_settings.threads = static_cast<unsigned>(std::stoi(value()));
+      else if (arg == "--latency-ms")
+        g_settings.latency_ms = std::stoi(value());
+      else if (arg == "--seed")
+        g_settings.seed = std::stoull(value());
+      else if (arg == "--group")
+        g_settings.groups.push_back(ParseGroup(value()));
+      else
+        throw std::runtime_error("unknown option " + arg);
     }
     if (g_settings.pki.empty()) throw std::runtime_error("--pki DIR is required");
     if (g_settings.groups.empty()) {
@@ -373,7 +406,8 @@ int main(int argc, char** argv) {
                  static_cast<double>(g_corpus.total_wire) / 1048576.0);
 
     asio::ssl::context context(asio::ssl::context::tls_server);
-    context.set_options(asio::ssl::context::default_workarounds | asio::ssl::context::no_sslv2 | asio::ssl::context::no_sslv3);
+    context.set_options(asio::ssl::context::default_workarounds | asio::ssl::context::no_sslv2 |
+                        asio::ssl::context::no_sslv3);
     context.use_certificate_chain_file(g_settings.pki + "/server.pem");
     context.use_private_key_file(g_settings.pki + "/server.key", asio::ssl::context::pem);
 
@@ -389,7 +423,8 @@ int main(int argc, char** argv) {
     for (auto& thread : threads) thread.join();
     std::fprintf(stderr, "served %llu requests (%llu chunks) on %llu connections, %.1f MiB\n",
                  static_cast<unsigned long long>(g_requests.load()), static_cast<unsigned long long>(g_chunks.load()),
-                 static_cast<unsigned long long>(g_connections.load()), static_cast<double>(g_bytes.load()) / 1048576.0);
+                 static_cast<unsigned long long>(g_connections.load()),
+                 static_cast<double>(g_bytes.load()) / 1048576.0);
   } catch (const std::exception& e) {
     std::fprintf(stderr, "bench-server: %s\n", e.what());
     return 1;

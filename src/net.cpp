@@ -143,7 +143,8 @@ asio::awaitable<std::vector<asio::ip::tcp::endpoint>> Net::resolve(const std::st
     FailTransient("cannot resolve " + host + ": " + e.code().message());
   }
   // IPv4 first: without happy eyeballs, a dead IPv6 route would otherwise cost a full connect timeout.
-  std::stable_partition(endpoints.begin(), endpoints.end(), [](const auto& endpoint) { return endpoint.address().is_v4(); });
+  std::stable_partition(endpoints.begin(), endpoints.end(),
+                        [](const auto& endpoint) { return endpoint.address().is_v4(); });
   m_addresses[key] = endpoints;
   co_return endpoints;
 }
@@ -222,8 +223,8 @@ asio::awaitable<std::shared_ptr<Connection>> Connection::open(std::shared_ptr<Ne
       if (verify != X509_V_OK) {
         Fail("TLS certificate of " + url.host + " rejected: " + X509_verify_cert_error_string(verify));
       }
-      FailTransient("TLS handshake with " + url.host + " failed: " +
-                    (connection->m_timedOut ? "timed out" : e.code().message()));
+      FailTransient("TLS handshake with " + url.host +
+                    " failed: " + (connection->m_timedOut ? "timed out" : e.code().message()));
     }
   }
   connection->disarm();

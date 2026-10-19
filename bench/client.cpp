@@ -67,7 +67,9 @@ int main(int argc, char** argv) {
 
     if (hold_ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(hold_ms));
     if (idle_only) {
-      std::printf("{\"ctor_ms\":%.2f,\"download_ms\":0,\"items\":0,\"failed\":0,\"downloaded_bytes\":0,\"unpacked_bytes\":0}\n", ctor_ms);
+      std::printf(
+          "{\"ctor_ms\":%.2f,\"download_ms\":0,\"items\":0,\"failed\":0,\"downloaded_bytes\":0,\"unpacked_bytes\":0}\n",
+          ctor_ms);
       return 0;
     }
 
@@ -93,7 +95,8 @@ int main(int argc, char** argv) {
         "{\"ctor_ms\":%.2f,\"download_ms\":%.2f,\"items\":%zu,\"failed\":%d,\"downloaded_bytes\":%llu,"
         "\"unpacked_bytes\":%llu,\"progress_calls\":%llu,\"first_error\":\"%s\"}\n",
         ctor_ms, download_ms, results.size(), failed, static_cast<unsigned long long>(downloaded),
-        static_cast<unsigned long long>(unpacked), static_cast<unsigned long long>(progress_calls.load()), first_error.c_str());
+        static_cast<unsigned long long>(unpacked), static_cast<unsigned long long>(progress_calls.load()),
+        first_error.c_str());
     return failed ? 2 : 0;
   } catch (const std::exception& e) {
     std::fprintf(stderr, "bench-client: %s\n", e.what());

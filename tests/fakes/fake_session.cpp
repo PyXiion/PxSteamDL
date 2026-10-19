@@ -76,16 +76,16 @@ asio::awaitable<Bytes> Session::rpc(std::string method, Bytes body) {
   if (!handlers || !handlers->rpc) Fail("unexpected RPC " + method);
   // Handlers may block, so they run on the fakes' pool.
   co_return co_await asio::co_spawn(
-      testing::FakePool(),
-      [&]() -> asio::awaitable<Bytes> { co_return handlers->rpc(method, body); }, asio::use_awaitable);
+      testing::FakePool(), [&]() -> asio::awaitable<Bytes> { co_return handlers->rpc(method, body); },
+      asio::use_awaitable);
 }
 
 asio::awaitable<Bytes> Session::request(std::uint32_t emsg, Bytes body) {
   auto handlers = testing::CurrentHandlers();
   if (!handlers || !handlers->request) Fail("unexpected request, EMsg " + std::to_string(emsg));
   co_return co_await asio::co_spawn(
-      testing::FakePool(),
-      [&]() -> asio::awaitable<Bytes> { co_return handlers->request(emsg, body); }, asio::use_awaitable);
+      testing::FakePool(), [&]() -> asio::awaitable<Bytes> { co_return handlers->request(emsg, body); },
+      asio::use_awaitable);
 }
 
 }  // namespace pxsteamdl::detail
