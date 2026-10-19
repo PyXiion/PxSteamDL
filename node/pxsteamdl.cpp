@@ -169,13 +169,17 @@ class CancelToken : public Napi::ObjectWrap<CancelToken> {
   }
 };
 
+struct AddonData {
+  Napi::FunctionReference client;
+};
+
 class Client : public Napi::ObjectWrap<Client> {
  public:
-  static Napi::FunctionReference constructor;
-
   static void Init(Napi::Env env, Napi::Object exports) {
     Napi::Function function = DefineClass(env, "Client", {InstanceMethod("download", &Client::Download)});
-    constructor = Napi::Persistent(function);
+    // Per-environment, so that the reference is released while its environment still exists. A static one would
+    // be destroyed at process exit, after the environment is gone.
+    env.SetInstanceData(new AddonData{Napi::Persistent(function)});
     exports.Set("Client", function);
     exports.Set("createClient", Napi::Function::New(env, Create));
   }
@@ -266,10 +270,8 @@ class Client : public Napi::ObjectWrap<Client> {
   ClientPtr m_client;
 };
 
-Napi::FunctionReference Client::constructor;
-
-Napi::Object WrapClient(Napi::Env /*env*/, ClientPtr client) {
-  Napi::Object object = Client::constructor.New({});
+Napi::Object WrapClient(Napi::Env env, ClientPtr client) {
+  Napi::Object object = env.GetInstanceData<AddonData>()->client.New({});
   Client::Unwrap(object)->Set(std::move(client));
   return object;
 }
