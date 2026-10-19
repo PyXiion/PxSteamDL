@@ -143,6 +143,11 @@ void Deliver(Napi::Env env, Napi::Function /*unused*/, Context* context, Message
 
 using Channel = Napi::TypedThreadSafeFunction<Context, Message, Deliver>;
 
+// Queues a message for the JavaScript thread; frees it if the environment is already shutting down.
+void Post(const Channel& channel, std::unique_ptr<Message> message) {
+  if (channel.NonBlockingCall(message.get()) == napi_ok) message.release();
+}
+
 Channel MakeChannel(Napi::Env env, std::unique_ptr<Context> context, const char* name) {
   // The queue is unbounded and the channel is released after the last message, so no message is lost; the
   // pending promise keeps the event loop alive, like any other asynchronous operation.
@@ -198,7 +203,7 @@ class Client : public Napi::ObjectWrap<Client> {
       } catch (...) {
         message = std::make_unique<Message>(ToFailure(std::current_exception()));
       }
-      channel.NonBlockingCall(message.release());
+      Post(channel, std::move(message));
       channel.Release();
     }).detach();
     return promise;
@@ -235,11 +240,13 @@ class Client : public Napi::ObjectWrap<Client> {
 
     if (want_progress) {
       options.on_progress = [channel](const pxsteamdl::Progress& progress) {
-        channel.NonBlockingCall(new Message(progress));
+        Post(channel, std::make_unique<Message>(progress));
       };
     }
     if (want_resolved) {
-      options.on_resolved = [channel](const pxsteamdl::ItemInfo& item) { channel.NonBlockingCall(new Message(item)); };
+      options.on_resolved = [channel](const pxsteamdl::ItemInfo& item) {
+        Post(channel, std::make_unique<Message>(item));
+      };
     }
 
     std::thread([channel, client = m_client, ids = std::move(ids), root, options = std::move(options)]() mutable {
@@ -250,7 +257,7 @@ class Client : public Napi::ObjectWrap<Client> {
         message = std::make_unique<Message>(ToFailure(std::current_exception()));
       }
       // Same queue as the callbacks above, so the promise settles after the last of them was called.
-      channel.NonBlockingCall(message.release());
+      Post(channel, std::move(message));
       channel.Release();
     }).detach();
     return promise;

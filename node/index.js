@@ -1,9 +1,22 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 'use strict';
 
-const native = require('./native/pxsteamdl-addon.node');
+const { toId, boundedInt, optionalFunction, guard, MAX_WORKERS } = require('./util');
 
-/** Thrown by Client.create() when the logon fails; kind says what went wrong. */
+let native;
+try {
+  native = require('./native/pxsteamdl-addon.node');
+} catch (error) {
+  if (error.code !== 'MODULE_NOT_FOUND') throw error;
+  throw new Error(
+    'pxsteamdl: the native addon is not built. It is compiled by the package install script, which needs CMake and ' +
+      'a C++20 compiler; newer npm versions skip install scripts of dependencies until they are approved. Run ' +
+      '"npm run install" in the pxsteamdl package directory.',
+    { cause: error }
+  );
+}
+
+/** Thrown by Client.create() when the logon fails and by download() when the whole operation fails; kind says what went wrong. */
 class PxSteamDLError extends Error {
   constructor(message, kind) {
     super(message);
@@ -12,33 +25,15 @@ class PxSteamDLError extends Error {
   }
 }
 
-function toId(value) {
-  if (typeof value === 'bigint') {
-    if (value >= 0n && value < 2n ** 64n) return value;
-  } else if (typeof value === 'number') {
-    if (Number.isSafeInteger(value) && value >= 0) return BigInt(value);
-  } else if (typeof value === 'string' && /^[0-9]{1,20}$/.test(value)) {
-    const id = BigInt(value);
-    if (id < 2n ** 64n) return id;
-  }
-  throw new TypeError(`invalid item ID: ${String(value)}`);
-}
-
-function positiveInt(name, value) {
-  if (!Number.isInteger(value) || value < 1) throw new RangeError(`${name} must be an integer >= 1`);
-  return value;
-}
-
-function optionalFunction(name, value) {
-  if (value !== undefined && typeof value !== 'function') throw new TypeError(`${name} must be a function`);
-  return value;
-}
+const CREATE = Symbol('create');
 
 /** Anonymous Steam session. One client may serve several downloads at once. */
 class Client {
   #native;
 
-  constructor(nativeClient) {
+  /** @private Use Client.create(). */
+  constructor(nativeClient, token) {
+    if (token !== CREATE) throw new TypeError('use Client.create() to make a Client');
     this.#native = nativeClient;
   }
 
@@ -48,11 +43,11 @@ class Client {
    * what libcurl finds in the environment (https_proxy, all_proxy), "" uses no proxy.
    */
   static async create({ proxy, connectTimeout = 10, stallTimeout = 30 } = {}) {
-    positiveInt('connectTimeout', connectTimeout);
-    positiveInt('stallTimeout', stallTimeout);
+    boundedInt('connectTimeout', connectTimeout, 2 ** 31 - 1);
+    boundedInt('stallTimeout', stallTimeout, 2 ** 31 - 1);
     if (proxy !== undefined && typeof proxy !== 'string') throw new TypeError('proxy must be a string');
     try {
-      return new Client(await native.createClient({ proxy, connectTimeout, stallTimeout }));
+      return new Client(await native.createClient({ proxy, connectTimeout, stallTimeout }), CREATE);
     } catch (error) {
       throw new PxSteamDLError(error.message, error.kind ?? 'other');
     }
@@ -61,15 +56,15 @@ class Client {
   /**
    * Downloads each item into root/<item id>/, updating existing copies incrementally.
    * Resolves with one result per entry of ids, in order; per-item failures are in result.error and
-   * result.errorKind, not exceptions. If `signal` aborts, the download is stopped and awaited (temporary
+   * result.errorKind, not exceptions; a failure of the whole operation rejects with PxSteamDLError. If `signal` aborts, the download is stopped and awaited (temporary
    * files removed, finished items kept) and the promise rejects with signal.reason.
    */
   async download(ids, root, { parallelItems = 2, threadsPerItem = 4, onProgress, onResolved, signal } = {}) {
     if (!Array.isArray(ids)) throw new TypeError('ids must be an array');
     if (typeof root !== 'string') throw new TypeError('root must be a string');
     const bigIds = ids.map(toId);
-    positiveInt('parallelItems', parallelItems);
-    positiveInt('threadsPerItem', threadsPerItem);
+    boundedInt('parallelItems', parallelItems, MAX_WORKERS);
+    boundedInt('threadsPerItem', threadsPerItem, MAX_WORKERS);
     optionalFunction('onProgress', onProgress);
     optionalFunction('onResolved', onResolved);
     signal?.throwIfAborted();
@@ -78,7 +73,14 @@ class Client {
     const abort = () => token.cancel();
     signal?.addEventListener('abort', abort, { once: true });
     try {
-      const results = await this.#native.download(bigIds, root, parallelItems, threadsPerItem, onProgress, onResolved, token);
+      let results;
+      try {
+        results = await this.#native.download(
+          bigIds, root, parallelItems, threadsPerItem, guard(onProgress), guard(onResolved), token
+        );
+      } catch (error) {
+        throw new PxSteamDLError(error.message, error.kind ?? 'other');
+      }
       signal?.throwIfAborted();
       return results;
     } finally {

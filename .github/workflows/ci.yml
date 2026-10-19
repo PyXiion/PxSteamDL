@@ -168,3 +168,14 @@ jobs:
       - name: Smoke test
         timeout-minutes: 10
         run: node .github/smoke_test.js
+
+      # What a user gets: the packed tarball, installed into an empty project, must build and load.
+      - name: Install the packed package
+        shell: bash
+        run: |
+          npm pack --pack-destination "$RUNNER_TEMP"
+          mkdir "$RUNNER_TEMP/consumer-node"
+          cd "$RUNNER_TEMP/consumer-node"
+          npm init -y
+          npm install "$RUNNER_TEMP"/pxsteamdl-*.tgz
+          node -e "const p = require('pxsteamdl'); console.log(p.version, typeof p.Client.create)"

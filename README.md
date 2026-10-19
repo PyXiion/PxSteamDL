@@ -203,8 +203,11 @@ asyncio.run(main())
 
 ## Node.js
 
-Build from source (needs CMake, a C++20 compiler and Node.js 18+; the addon is built with
-[cmake-js](https://github.com/cmake-js/cmake-js) and uses Node-API, so it works across Node versions):
+There are no prebuilt binaries yet: installing builds the addon from source (needs CMake, a C++20 compiler and
+Node.js 18+; it is built with [cmake-js](https://github.com/cmake-js/cmake-js) and uses Node-API, so one build works
+across Node versions). The first build compiles all dependencies and takes a few minutes. Newer npm versions do not run
+the install scripts of dependencies until they are approved; if `require('pxsteamdl')` says the addon is not built,
+approve the script or run `npm run install` in `node_modules/pxsteamdl`.
 
 ```sh
 npm install git+https://github.com/PyXiion/PxSteamDL   # or, from a checkout: npm install
@@ -227,8 +230,9 @@ The API mirrors the Python one with camelCase names: `Client.create({ proxy, con
 asynchronous; downloads run on their own threads and never block the event loop, and one `Client` may serve several
 downloads at once. Item IDs are numbers, bigints or decimal strings; IDs and byte counts in results are numbers.
 `result.errorKind` is `'none'`, `'cancelled'`, `'notFound'`, `'rejected'`, `'network'`, `'data'`, `'filesystem'` or
-`'other'`. `onProgress` and `onResolved` are called on the main thread; an exception they throw is an uncaught
-exception and does not stop the download. Aborting `signal` stops the download, waits until in-flight requests finish
+`'other'`. `onProgress` and `onResolved` are called on the main thread; an exception they throw is rethrown as an uncaught
+exception (`process.on('uncaughtException')`) and does not stop the download. A failure of the whole operation rejects
+with `PxSteamDLError`, which has a `kind`. Aborting `signal` stops the download, waits until in-flight requests finish
 and temporary files are removed, then rejects with `signal.reason`. TypeScript declarations are included
 (`node/index.d.ts`).
 

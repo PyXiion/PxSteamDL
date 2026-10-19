@@ -66,9 +66,9 @@ export interface ClientOptions {
 }
 
 export interface DownloadOptions {
-  /** Items downloaded side by side. Default 2. */
+  /** Items downloaded side by side, 1 to 1024. Default 2. */
   parallelItems?: number;
-  /** Chunk workers per parallel item, shared across all items. Default 4. */
+  /** Chunk workers per parallel item, shared across all items, 1 to 1024. Default 4. */
   threadsPerItem?: number;
   /** Called on the main thread. An exception it throws is an uncaught exception and does not stop the download. */
   onProgress?: (progress: Progress) => void;
@@ -78,10 +78,10 @@ export interface DownloadOptions {
   signal?: AbortSignal;
 }
 
-/** Item IDs are numbers (safe integers), bigints or decimal strings. */
+/** Item IDs are numbers, bigints or decimal strings, at most Number.MAX_SAFE_INTEGER (results carry them as numbers). */
 export type ItemId = number | bigint | string;
 
-/** Thrown by Client.create() when the logon fails. */
+/** Thrown by Client.create() when the logon fails, and by download() when the whole operation fails. */
 export class PxSteamDLError extends Error {
   kind: ErrorKind;
   constructor(message: string, kind: ErrorKind);
