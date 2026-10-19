@@ -6,6 +6,11 @@ as described in [CONTRIBUTING.md](CONTRIBUTING.md#versioning).
 
 ## [Unreleased]
 
+### Added
+
+- Node.js binding (Node-API, built with cmake-js): `Client.create()` and `client.download()` with `onProgress`, `onResolved`
+  and `AbortSignal` cancellation, plus TypeScript declarations.
+
 ## [0.4.0] - 2026-10-18
 
 ### Added

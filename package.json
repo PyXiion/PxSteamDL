@@ -1,0 +1,41 @@
+{
+  "name": "pxsteamdl",
+  "version": "0.4.0",
+  "description": "Anonymous Steam Workshop (RimWorld) downloader",
+  "license": "LGPL-3.0-or-later",
+  "homepage": "https://github.com/PyXiion/PxSteamDL",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PyXiion/PxSteamDL.git"
+  },
+  "bugs": "https://github.com/PyXiion/PxSteamDL/issues",
+  "main": "node/index.js",
+  "types": "node/index.d.ts",
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "linux",
+    "darwin",
+    "win32"
+  ],
+  "files": [
+    "node/index.js",
+    "node/index.d.ts",
+    "node/pxsteamdl.cpp",
+    "CMakeLists.txt",
+    "cmake",
+    "include",
+    "src",
+    "COPYING",
+    "COPYING.LESSER"
+  ],
+  "scripts": {
+    "install": "cmake-js compile --out build-node --CDPXSTEAMDL_BUILD_NODE=ON --CDPXSTEAMDL_BUILD_CLI=OFF --CDPXSTEAMDL_INSTALL=OFF",
+    "test": "node --test node/test/api.test.js"
+  },
+  "dependencies": {
+    "cmake-js": "^8.0.0",
+    "node-addon-api": "^8.0.0"
+  }
+}

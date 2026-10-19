@@ -21,3 +21,9 @@ dist/
 .venv/
 _skbuild/
 wheelhouse/
+
+# Node.js
+node_modules/
+build-node/
+node/native/
+*.tgz

@@ -201,10 +201,41 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
+## Node.js
+
+Build from source (needs CMake, a C++20 compiler and Node.js 18+; the addon is built with
+[cmake-js](https://github.com/cmake-js/cmake-js) and uses Node-API, so it works across Node versions):
+
+```sh
+npm install git+https://github.com/PyXiion/PxSteamDL   # or, from a checkout: npm install
+```
+
+```js
+const { Client } = require('pxsteamdl');
+
+const client = await Client.create(); // anonymous logon; rejects with PxSteamDLError on failure
+
+const results = await client.download([2009463077, 818773962], 'mods', {
+  onResolved: (info) => console.log(info.ok ? `queued ${info.itemId}: ${info.title}` : `${info.itemId}: ${info.error}`),
+  onProgress: (p) => console.log(`${p.itemId} ${p.title}: ${p.unpackedBytes}/${p.unpackedTotal}`),
+});
+for (const r of results) console.log(r.itemId, r.title, r.ok ? r.path : `${r.errorKind}: ${r.error}`);
+```
+
+The API mirrors the Python one with camelCase names: `Client.create({ proxy, connectTimeout, stallTimeout })` and
+`client.download(ids, root, { parallelItems, threadsPerItem, onProgress, onResolved, signal })`. Everything is
+asynchronous; downloads run on their own threads and never block the event loop, and one `Client` may serve several
+downloads at once. Item IDs are numbers, bigints or decimal strings; IDs and byte counts in results are numbers.
+`result.errorKind` is `'none'`, `'cancelled'`, `'notFound'`, `'rejected'`, `'network'`, `'data'`, `'filesystem'` or
+`'other'`. `onProgress` and `onResolved` are called on the main thread; an exception they throw is an uncaught
+exception and does not stop the download. Aborting `signal` stops the download, waits until in-flight requests finish
+and temporary files are removed, then rejects with `signal.reason`. TypeScript declarations are included
+(`node/index.d.ts`).
+
 ## Examples
 
 Complete programs that use the whole API are in [`examples/`](examples): `download.cpp` (C++; built with
-`-DPXSTEAMDL_BUILD_EXAMPLES=ON`), `download.py` (synchronous Python) and `download_async.py` (asyncio). Each takes a
+`-DPXSTEAMDL_BUILD_EXAMPLES=ON`), `download.py` (synchronous Python), `download_async.py` (asyncio) and `download.js` (Node.js). Each takes a
 directory and item IDs.
 
 ## Behaviour
