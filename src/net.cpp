@@ -19,7 +19,7 @@ extern const std::size_t kCaBundleSize;
 namespace {
 
 constexpr std::size_t kReadBufferSize = 64 * 1024;
-constexpr std::size_t kMaxIdleConnections = 64;
+constexpr std::size_t kMaxIdleConnections = 256;
 constexpr auto kIdleLifetime = std::chrono::seconds(60);
 
 void LoadCaBundle(asio::ssl::context& context) {
@@ -151,7 +151,10 @@ std::shared_ptr<Connection> Net::takeIdle(const std::string& origin) {
 }
 
 void Net::giveIdle(const std::string& origin, std::shared_ptr<Connection> connection) {
-  if (m_idleCount >= kMaxIdleConnections) return;  // dropped: closes the socket
+  if (m_idleCount >= kMaxIdleConnections) {
+    connection->close();  // also ends the watchdog, which would keep the connection alive until it fires
+    return;
+  }
   connection->disarm();
   m_idle[origin].push_back({std::move(connection), std::chrono::steady_clock::now()});
   ++m_idleCount;

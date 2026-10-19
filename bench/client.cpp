@@ -5,6 +5,7 @@
 //   bench-client --root DIR --ids 1000,1001,... [--parallel-items 2] [--threads-per-item 4] [--hold-ms 0] [--idle-only]
 // --hold-ms keeps the connected client idle for that long before downloading; with --idle-only it then exits without
 // downloading (for measuring the footprint of a connected, idle client).
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -70,7 +71,7 @@ int main(int argc, char** argv) {
       return 0;
     }
 
-    std::uint64_t progress_calls = 0;
+    std::atomic<std::uint64_t> progress_calls{0};
     options.on_progress = [&](const pxsteamdl::Progress&) { ++progress_calls; };
     start = std::chrono::steady_clock::now();
     std::vector<pxsteamdl::Result> results = client.download(ids, root, options);
@@ -92,7 +93,7 @@ int main(int argc, char** argv) {
         "{\"ctor_ms\":%.2f,\"download_ms\":%.2f,\"items\":%zu,\"failed\":%d,\"downloaded_bytes\":%llu,"
         "\"unpacked_bytes\":%llu,\"progress_calls\":%llu,\"first_error\":\"%s\"}\n",
         ctor_ms, download_ms, results.size(), failed, static_cast<unsigned long long>(downloaded),
-        static_cast<unsigned long long>(unpacked), static_cast<unsigned long long>(progress_calls), first_error.c_str());
+        static_cast<unsigned long long>(unpacked), static_cast<unsigned long long>(progress_calls.load()), first_error.c_str());
     return failed ? 2 : 0;
   } catch (const std::exception& e) {
     std::fprintf(stderr, "bench-client: %s\n", e.what());
