@@ -33,6 +33,10 @@ CPMAddPackage(
     SYSTEM YES
 )
 
+if(PXSTEAMDL_BUILD_NODE AND WIN32)
+    # node.lib exports node.exe's own zlib (inflate, crc32, ...), which clashes with ours at link time: prefix ours.
+    add_compile_definitions(Z_PREFIX)
+endif()
 CPMAddPackage(
     NAME zlib
     VERSION 1.3.2
@@ -317,11 +321,11 @@ if(PXSTEAMDL_BUILD_NODE)
     )
     string(REPLACE "\"" "" node_addon_api_dir "${node_addon_api_dir}")
     add_library(pxsteamdl-node SHARED node/pxsteamdl.cpp ${CMAKE_JS_SRC})
-    set_target_properties(pxsteamdl-node PROPERTIES OUTPUT_NAME pxsteamdl PREFIX "" SUFFIX ".node")
+    set_target_properties(pxsteamdl-node PROPERTIES OUTPUT_NAME pxsteamdl-addon PREFIX "" SUFFIX ".node")
     target_include_directories(pxsteamdl-node SYSTEM PRIVATE ${CMAKE_JS_INC} ${node_addon_api_dir})
     target_compile_definitions(pxsteamdl-node PRIVATE NAPI_CPP_EXCEPTIONS)
     target_link_libraries(pxsteamdl-node PRIVATE PxSteamDL::pxsteamdl ${CMAKE_JS_LIB})
-    # node/index.js loads node/native/pxsteamdl.node, whatever the generator.
+    # node/index.js loads node/native/pxsteamdl-addon.node, whatever the generator.
     set(node_native_dir $<1:${CMAKE_CURRENT_SOURCE_DIR}/node/native>)
     set_target_properties(pxsteamdl-node PROPERTIES
         LIBRARY_OUTPUT_DIRECTORY ${node_native_dir}

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 'use strict';
 
-const native = require('./native/pxsteamdl.node');
+const native = require('./native/pxsteamdl-addon.node');
 
 /** Thrown by Client.create() when the logon fails; kind says what went wrong. */
 class PxSteamDLError extends Error {
