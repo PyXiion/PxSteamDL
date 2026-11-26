@@ -253,7 +253,7 @@ jobs:
     needs: [check, node-prebuilds]
     if: always() && needs.node-prebuilds.result == 'success' && needs.check.result != 'failure'
     runs-on: ubuntu-latest
-    # The pending trusted publisher on npmjs.com names this workflow and the npm environment.
+    # The trusted publisher configured on npmjs.com names this workflow and the npm environment.
     environment: npm
     permissions:
       contents: read
@@ -261,10 +261,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # No registry-url: setup-node would write an .npmrc with the placeholder NODE_AUTH_TOKEN
+      # (XXXXX-XXXXX-XXXXX-XXXXX); npm would authenticate with it, never do the OIDC exchange, and the publish
+      # would fail with a misleading 404. Trusted publishing needs only id-token: write.
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
 
       - uses: actions/download-artifact@v8
         with:
@@ -290,7 +292,7 @@ jobs:
       # Trusted publishing (OIDC): no token. Only for a tag; a manual run stops after the checks above.
       - name: Publish
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        run: npm publish --provenance --access public pxsteamdl-*.tgz
+        run: npm publish --provenance --access public --registry=https://registry.npmjs.org pxsteamdl-*.tgz
 
   pypi:
     name: Publish to PyPI
