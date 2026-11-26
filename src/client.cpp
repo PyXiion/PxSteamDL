@@ -2,7 +2,9 @@
 #include "pxsteamdl/pxsteamdl.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <stdexcept>
+#include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -104,6 +106,10 @@ std::vector<Result> Client::download(std::span<const std::uint64_t> item_ids, co
                                      const Options& options) {
   if (options.parallel_items < 1) throw std::invalid_argument("Options::parallel_items must be at least 1");
   if (options.threads_per_item < 1) throw std::invalid_argument("Options::threads_per_item must be at least 1");
+  if (static_cast<std::uint64_t>(options.parallel_items) * options.threads_per_item > kMaxWorkers) {
+    throw std::invalid_argument("Options::parallel_items * Options::threads_per_item must be at most " +
+                                std::to_string(kMaxWorkers));
+  }
   if (item_ids.empty()) return {};
 
   std::vector<std::size_t> slots;

@@ -55,7 +55,7 @@ jobs:
       # Style (see CONTRIBUTING.md): formatting and naming, checked once with pinned LLVM 18 tools.
       - name: clang-format
         if: runner.os == 'Linux'
-        run: clang-format-18 --dry-run --Werror src/*.cpp src/*.hpp include/pxsteamdl/*.hpp cli/main.cpp python/pxsteamdl.cpp tests/*.cpp tests/*.hpp tests/fakes/*.?pp
+        run: clang-format-18 --dry-run --Werror src/*.cpp src/*.hpp include/pxsteamdl/*.hpp cli/main.cpp python/pxsteamdl.cpp node/pxsteamdl.cpp tests/*.cpp tests/*.hpp tests/fakes/*.?pp
 
       - name: clang-tidy
         if: runner.os == 'Linux'
@@ -138,3 +138,44 @@ jobs:
       - name: Smoke test
         timeout-minutes: 10
         run: python -u .github/smoke_test.py
+
+  node:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      CPM_SOURCE_CACHE: ${{ github.workspace }}/.cpm-cache
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - uses: actions/cache@v6
+        with:
+          path: .cpm-cache
+          key: cpm-node-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Install package
+        run: npm install
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Smoke test
+        timeout-minutes: 10
+        run: node .github/smoke_test.js
+
+      # What a user gets: the packed tarball, installed into an empty project, must build and load.
+      - name: Install the packed package
+        shell: bash
+        run: |
+          npm pack --pack-destination "$RUNNER_TEMP"
+          mkdir "$RUNNER_TEMP/consumer-node"
+          cd "$RUNNER_TEMP/consumer-node"
+          npm init -y
+          npm install "$RUNNER_TEMP"/pxsteamdl-*.tgz
+          node -e "const p = require('pxsteamdl'); console.log(p.version, typeof p.Client.create)"

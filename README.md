@@ -103,7 +103,7 @@ variables; empty: no proxy), a `connect_timeout` and a `stall_timeout`. A `Clien
 **Callbacks that throw.** An exception from `on_progress` (worker threads) fails the item it was called for
 (`error_kind` `kOther`) and the others go on; one from `on_resolved` propagates out of `download()` after the items
 under way have been stopped. In Python, exceptions from either are reported through `sys.unraisablehook` and the
-download goes on. `download()` throws `std::invalid_argument` if `parallel_items` or `threads_per_item` is 0.
+download goes on. `download()` throws `std::invalid_argument` if `parallel_items` or `threads_per_item` is 0 or if `parallel_items * threads_per_item` exceeds `pxsteamdl::kMaxWorkers` (256).
 
 To cancel, pass a `std::stop_token` in `Options::stop`. Once stop is requested, in-flight chunk requests finish,
 the remaining work is skipped and every unfinished item reports `Result::error == "cancelled"`; items that already
@@ -201,10 +201,47 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
+## Node.js
+
+The npm package ships prebuilt addons for Linux x64 (glibc 2.28+), macOS arm64 (11.0+) and Windows x64, built by the
+release workflow; Node-API makes one binary work for every Node.js version (18+). On other platforms, and when
+installing from git or a checkout, the install script builds the addon from source (needs CMake, a C++20 compiler and
+Node.js 20.17+ or 22.9+ for [cmake-js](https://github.com/cmake-js/cmake-js); the first build compiles all
+dependencies and takes a few minutes). Newer npm versions do not run the install scripts of dependencies until they
+are approved; with a prebuilt addon that does not matter, otherwise approve the script or run `npm run install` in
+`node_modules/pxsteamdl` if `require('pxsteamdl')` says the addon is not available.
+
+```sh
+npm install git+https://github.com/PyXiion/PxSteamDL   # or, from a checkout: npm install
+```
+
+```js
+const { Client } = require('pxsteamdl');
+
+const client = await Client.create(); // anonymous logon; rejects with PxSteamDLError on failure
+
+const results = await client.download([2009463077, 818773962], 'mods', {
+  onResolved: (info) => console.log(info.ok ? `queued ${info.itemId}: ${info.title}` : `${info.itemId}: ${info.error}`),
+  onProgress: (p) => console.log(`${p.itemId} ${p.title}: ${p.unpackedBytes}/${p.unpackedTotal}`),
+});
+for (const r of results) console.log(r.itemId, r.title, r.ok ? r.path : `${r.errorKind}: ${r.error}`);
+```
+
+The API mirrors the Python one with camelCase names: `Client.create({ proxy, connectTimeout, stallTimeout })` and
+`client.download(ids, root, { parallelItems, threadsPerItem, onProgress, onResolved, signal })`. Everything is
+asynchronous; downloads run on their own threads and never block the event loop, and one `Client` may serve several
+downloads at once. Item IDs are numbers, bigints or decimal strings; IDs and byte counts in results are numbers.
+`result.errorKind` is `'none'`, `'cancelled'`, `'notFound'`, `'rejected'`, `'network'`, `'data'`, `'filesystem'` or
+`'other'`. `onProgress` and `onResolved` are called on the main thread; an exception they throw is rethrown as an uncaught
+exception (`process.on('uncaughtException')`) and does not stop the download. A failure of the whole operation rejects
+with `PxSteamDLError`, which has a `kind`. Aborting `signal` stops the download, waits until in-flight requests finish
+and temporary files are removed, then rejects with `signal.reason`. TypeScript declarations are included
+(`node/index.d.ts`).
+
 ## Examples
 
 Complete programs that use the whole API are in [`examples/`](examples): `download.cpp` (C++; built with
-`-DPXSTEAMDL_BUILD_EXAMPLES=ON`), `download.py` (synchronous Python) and `download_async.py` (asyncio). Each takes a
+`-DPXSTEAMDL_BUILD_EXAMPLES=ON`), `download.py` (synchronous Python), `download_async.py` (asyncio) and `download.js` (Node.js). Each takes a
 directory and item IDs.
 
 ## Behaviour

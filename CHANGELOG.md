@@ -6,6 +6,17 @@ as described in [CONTRIBUTING.md](CONTRIBUTING.md#versioning).
 
 ## [Unreleased]
 
+### Changed
+
+- `download()` refuses a worker pool above 256 threads (`parallel_items * threads_per_item`) with `std::invalid_argument`
+  (`ValueError` in Python); a huge value used to start that many threads.
+
+### Added
+
+- Node.js binding (Node-API, built with cmake-js): `Client.create()` and `client.download()` with `onProgress`, `onResolved`
+  and `AbortSignal` cancellation, plus TypeScript declarations. The release workflow builds the addon for
+  Linux x64, macOS arm64 and Windows x64 and publishes the package to npm (trusted publishing).
+
 ## [0.4.0] - 2026-10-18
 
 ### Added
