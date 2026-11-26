@@ -6,6 +6,8 @@ as described in [CONTRIBUTING.md](CONTRIBUTING.md#versioning).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-26
+
 ### Changed
 
 - `download()` refuses a worker pool above 256 threads (`parallel_items * threads_per_item`) with `std::invalid_argument`
@@ -121,7 +123,8 @@ First release.
 - Linux, macOS and Windows builds from vendored static dependencies; release workflow with CLI binaries, wheels and
   an sdist.
 
-[Unreleased]: https://github.com/PyXiion/PxSteamDL/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/PyXiion/PxSteamDL/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/PyXiion/PxSteamDL/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/PyXiion/PxSteamDL/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/PyXiion/PxSteamDL/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/PyXiion/PxSteamDL/compare/v0.1.1...v0.2.0
