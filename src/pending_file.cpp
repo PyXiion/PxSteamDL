@@ -152,7 +152,10 @@ Sha1Hash Sha1File(const NativeFile& file, std::uint64_t size) {
   for (std::uint64_t offset = 0; ok && offset < size;) {
     auto length = static_cast<std::size_t>(std::min<std::uint64_t>(buffer.size(), size - offset));
     std::int64_t read = file.readAt(offset, std::span(buffer.data(), length));
-    ok = read > 0 && mbedtls_sha1_update(&context, buffer.data(), static_cast<std::size_t>(read)) == 0;
+    if (read <= 0 || mbedtls_sha1_update(&context, buffer.data(), static_cast<std::size_t>(read)) != 0) {
+      ok = false;
+      break;
+    }
     offset += static_cast<std::uint64_t>(read);
   }
   ok = ok && mbedtls_sha1_finish(&context, hash.data()) == 0;

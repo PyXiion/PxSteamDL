@@ -6,6 +6,22 @@ as described in [CONTRIBUTING.md](CONTRIBUTING.md#versioning).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-27
+
+### Fixed
+
+- `Session::Impl::call()` now marks the session disconnected and stops the reader/heartbeat threads when a Steam CM
+  request times out, so retries reconnect on a fresh WebSocket instead of reusing a stalled one.
+- `Downloader` no longer holds `m_cacheMutex` across network and retry calls in `depotKey()` and `cdnHosts()`.
+- `ParseU64()` in workshop metadata parsing now uses `std::from_chars` instead of `std::stoull`, rejecting trailing
+  non-digits and negative numbers.
+- `Sha1File()` breaks immediately on read errors instead of advancing `offset` by a negative read count.
+
+### Changed
+
+- Rewrote `README.md` for readability, leading with CLI, Python (PyPI), and Node.js (npm) usage.
+- Deduplicated Python callback exception wrapping in `python/pxsteamdl.cpp`.
+
 ## [0.5.0] - 2026-11-26
 
 ### Changed
@@ -123,7 +139,8 @@ First release.
 - Linux, macOS and Windows builds from vendored static dependencies; release workflow with CLI binaries, wheels and
   an sdist.
 
-[Unreleased]: https://github.com/PyXiion/PxSteamDL/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/PyXiion/PxSteamDL/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/PyXiion/PxSteamDL/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/PyXiion/PxSteamDL/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/PyXiion/PxSteamDL/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/PyXiion/PxSteamDL/compare/v0.2.0...v0.3.0

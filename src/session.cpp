@@ -213,6 +213,8 @@ class Session::Impl {
     }
     if (future.wait_for(kCallTimeout) == std::future_status::timeout) {
       forget();
+      markDisconnected("Steam CM request timed out");
+      stopThreads();
       FailTransient("Steam CM request timed out (EMsg " + std::to_string(emsg) + " " + std::string(job_name) + ")");
     }
     return future.get();

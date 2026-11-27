@@ -8,6 +8,7 @@
 #include "pxsteamdl/pxsteamdl.hpp"
 
 #include <exception>
+#include <functional>
 #include <optional>
 #include <string>
 
@@ -18,6 +19,22 @@ namespace {
 
 using ProgressCallback = nb::typed<nb::callable, void(const pxsteamdl::Progress&)>;
 using ResolvedCallback = nb::typed<nb::callable, void(const pxsteamdl::ItemInfo&)>;
+
+template <typename Arg, typename Callback>
+std::function<void(const Arg&)> WrapCallback(std::optional<Callback>& callback) {
+  if (!callback) return {};
+  // The caller's argument keeps the callable alive for the whole (synchronous) download,
+  // so a borrowed handle avoids touching its refcount from worker threads without the GIL.
+  return [cb = nb::handle(*callback)](const Arg& arg) {
+    nb::gil_scoped_acquire gil;
+    try {
+      cb(arg);
+    } catch (nb::python_error& e) {
+      // Like threading.excepthook: report and keep the worker going.
+      e.discard_as_unraisable(cb);
+    }
+  };
+}
 
 std::vector<pxsteamdl::Result> Download(pxsteamdl::Client& client, const std::vector<std::uint64_t>& ids,
                                         const std::filesystem::path& root, int parallel_items, int threads_per_item,
@@ -34,29 +51,8 @@ std::vector<pxsteamdl::Result> Download(pxsteamdl::Client& client, const std::ve
   options.parallel_items = static_cast<unsigned>(parallel_items);
   options.threads_per_item = static_cast<unsigned>(threads_per_item);
   if (cancel) options.stop = cancel->get_token();
-  if (on_progress) {
-    // The caller's argument keeps the callable alive for the whole (synchronous) download,
-    // so a borrowed handle avoids touching its refcount from worker threads without the GIL.
-    options.on_progress = [callback = nb::handle(*on_progress)](const pxsteamdl::Progress& progress) {
-      nb::gil_scoped_acquire gil;
-      try {
-        callback(progress);
-      } catch (nb::python_error& e) {
-        // Like threading.excepthook: report and keep the worker going.
-        e.discard_as_unraisable(callback);
-      }
-    };
-  }
-  if (on_resolved) {
-    options.on_resolved = [callback = nb::handle(*on_resolved)](const pxsteamdl::ItemInfo& info) {
-      nb::gil_scoped_acquire gil;
-      try {
-        callback(info);
-      } catch (nb::python_error& e) {
-        e.discard_as_unraisable(callback);
-      }
-    };
-  }
+  options.on_progress = WrapCallback<pxsteamdl::Progress>(on_progress);
+  options.on_resolved = WrapCallback<pxsteamdl::ItemInfo>(on_resolved);
 
   nb::gil_scoped_release release;
   return client.download(ids, root, options);

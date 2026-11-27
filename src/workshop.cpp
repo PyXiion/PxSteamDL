@@ -2,9 +2,11 @@
 #include "workshop.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cstddef>
 #include <exception>
 #include <string_view>
+#include <system_error>
 #include <unordered_map>
 #include <utility>
 
@@ -25,10 +27,21 @@ constexpr std::size_t kBatchSize = 100;
 
 // The Web API returns 64-bit numbers as strings.
 std::uint64_t ParseU64(const nlohmann::json& value) {
-  if (value.is_number()) return value.get<std::uint64_t>();
+  if (value.is_number_unsigned()) return value.get<std::uint64_t>();
+  if (value.is_number_integer()) {
+    auto n = value.get<std::int64_t>();
+    if (n < 0) Fail("invalid unsigned integer");
+    return static_cast<std::uint64_t>(n);
+  }
   if (value.is_string()) {
     const auto& text = value.get_ref<const std::string&>();
-    return text.empty() ? 0 : std::stoull(text);
+    if (text.empty()) return 0;
+    std::uint64_t parsed = 0;
+    const char* begin = text.data();
+    const char* end = begin + text.size();
+    auto [ptr, ec] = std::from_chars(begin, end, parsed);
+    if (ec != std::errc{} || ptr != end) Fail("invalid unsigned integer: " + text);
+    return parsed;
   }
   return 0;
 }

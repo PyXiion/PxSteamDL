@@ -192,9 +192,12 @@ class Downloader::Impl {
 
  private:
   AesKey depotKey(std::uint32_t depot, std::uint32_t app_id) {
-    std::lock_guard lock(m_cacheMutex);
-    if (auto it = m_keys.find(depot); it != m_keys.end()) return it->second;
+    {
+      std::lock_guard lock(m_cacheMutex);
+      if (auto it = m_keys.find(depot); it != m_keys.end()) return it->second;
+    }
     AesKey key = Retry(m_stop, [&] { return requestDepotKey(depot, app_id); });
+    std::lock_guard lock(m_cacheMutex);
     return m_keys.emplace(depot, key).first->second;
   }
 
@@ -221,9 +224,13 @@ class Downloader::Impl {
   }
 
   const std::vector<std::string>& cdnHosts(std::uint32_t app_id) {
+    {
+      std::lock_guard lock(m_cacheMutex);
+      if (auto it = m_hosts.find(app_id); it != m_hosts.end()) return it->second;
+    }
+    std::vector<std::string> hosts = FetchCdnHosts(app_id, m_session.httpConfig(), m_stop);
     std::lock_guard lock(m_cacheMutex);
-    if (auto it = m_hosts.find(app_id); it != m_hosts.end()) return it->second;
-    return m_hosts.emplace(app_id, FetchCdnHosts(app_id, m_session.httpConfig(), m_stop)).first->second;
+    return m_hosts.emplace(app_id, std::move(hosts)).first->second;
   }
 
   std::uint64_t manifestRequestCode(const Item& item, std::uint32_t depot) {
